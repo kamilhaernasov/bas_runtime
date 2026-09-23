@@ -44,7 +44,9 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # ---- Exe-xe-xe ----
 add_executable(${PROJECT_NAME} 
-    ${CMAKE_SOURCE_DIR}/runtime/src/main.cpp)
+    ${CMAKE_SOURCE_DIR}/runtime/main.cpp
+    ${CMAKE_SOURCE_DIR}/runtime/fsm/fsm.cpp
+)
 
 # ---- Libs ----
 target_compile_definitions(${PROJECT_NAME} PRIVATE 
@@ -59,6 +61,13 @@ find_package(OpenCV REQUIRED QUIET)
 # Pthread
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
+# Inih
+add_library(inih STATIC
+    ${CMAKE_SOURCE_DIR}/externals/inih/cpp/INIReader.cpp
+)
+target_include_directories(inih PUBLIC
+    ${CMAKE_SOURCE_DIR}/externals/inih/cpp
+)
 
 # ---- Options ----
 # Compiler
@@ -83,11 +92,18 @@ target_link_libraries(${PROJECT_NAME}
     pthread
     rtsp
     rga
+    inih
 )
 
 # ---- Include dirs ----
-target_include_directories(${PROJECT_NAME} PRIVATE                        
-    ${OpenCV_INCLUDE_DIRS}  
+target_include_directories(${PROJECT_NAME} PRIVATE       
+    ${CMAKE_SOURCE_DIR}/runtime/fsm                   
+    ${OpenCV_INCLUDE_DIRS}
+    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/utils
+    ${CMAKE_CURRENT_SOURCE_DIR}/common 
+    ${CMAKE_CURRENT_SOURCE_DIR}/common/isp3.x 
+    ${SDK_PATH}/media/iva/out/include
     ${SDK_PATH}/dependencies/include
     ${SDK_PATH}/dependencies/include/rknn
     ${SDK_PATH}/dependencies/include/librga 
