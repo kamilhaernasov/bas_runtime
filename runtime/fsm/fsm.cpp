@@ -56,12 +56,11 @@ bool fsm::init()
 
     while(1)
     {
-        _vi.exec_frame();
+        _vi.receive_frame_from_channel();
         _venc.exec_frame_from_vi(_vi.get_frame());
         _venc.exec_frame_to_codec();
 
-        _rtsp.send_frame
-        (
+        _rtsp.send_frame(
             reinterpret_cast<uint8_t*>(_mb_pool.get_handle_from_mb_blk(_venc.get_codec_frame()->pstPack->pMbBlk)), 
             _venc.get_codec_frame()->pstPack->u32Len,
             _venc.get_codec_frame()->pstPack->u64PTS

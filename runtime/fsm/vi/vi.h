@@ -32,9 +32,9 @@ public:
     void set_settings(const settings settings);
     void init();
     void release();
-    
+
     VIDEO_FRAME_INFO_S* get_frame();
-    bool exec_frame();
+    bool receive_frame_from_channel();
 
     void release_frame();
 private:

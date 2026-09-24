@@ -122,7 +122,7 @@ VIDEO_FRAME_INFO_S* vi::get_frame()
     return &_frame;
 }
 
-bool vi::exec_frame()
+bool vi::receive_frame_from_channel()
 {
     RK_S32 result_code = RK_MPI_VI_GetChnFrame(_settings._id_camera, _settings._id_camera, &_frame, -1);
     if (result_code)
