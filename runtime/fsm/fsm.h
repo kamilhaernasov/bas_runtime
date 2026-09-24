@@ -32,44 +32,36 @@ extern "C"
     #include "rtsp_demo.h"
 };
 
+#include "mb_pool.h"
+#include "vi.h"
+#include "venc.h"
+#include "rtsp.h"
+
 class fsm 
 {
 public:
+    struct settings
+    {
+        uint16_t _width = 640;
+        uint16_t _height = 640;
+        uint8_t _mb_blk_count = 1;
+        uint8_t _bytes_per_pixel = 3;
+        uint8_t _id_camera = 0;
+        std::string _path_to_iq_dir = "/etc/iqfiles";
+        PIXEL_FORMAT_E _pixel_format = RK_FMT_YUV420SP;
+        venc::codec _codec = venc::codec::H264;
+        uint8_t _venc_gop = 1;
+    };
+
     explicit fsm();
     ~fsm();
 
     bool init();
-
-    void set_width(const uint16_t width);
-    void set_height(const uint16_t height);
-    uint16_t get_width() const;
-    uint16_t get_height() const;
-
-    bool create_mb_pool(const uint8_t mb_cnt);
-    bool build_h264_frame(MB_BLK* mb_blk);
-    bool isp_init();
-    bool mpi_init();
-    bool rtsp_init();
-    bool vi_dev_init();
-    bool vi_channel_init();
-    bool venc_init();
-
 private:
-    uint16_t _width = 1920;
-    uint16_t _height = 1080;
+    settings _settings;
 
-    MB_POOL_CONFIG_S _mb_pool_cfg;
-    MB_POOL _mb_pool;
-
-    VIDEO_FRAME_INFO_S _h264_frame;
-
-    rtsp_demo_handle _rtsp_handle;
-    rtsp_session_handle _rtsp_session;
-
-    VI_DEV_ATTR_S _vi_dev_attr;
-	VI_DEV_BIND_PIPE_S _vi_dev_bind_pipe;
-    VI_CHN_ATTR_S _vi_chn_attr;
-
-    VENC_RECV_PIC_PARAM_S _venc_recv_param;
-	VENC_CHN_ATTR_S _venc_chn_attr;
+    mb_pool _mb_pool;
+    vi _vi;
+    venc _venc;
+    rtsp _rtsp;
 };
