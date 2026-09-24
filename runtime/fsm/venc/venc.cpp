@@ -79,7 +79,7 @@ void venc::exec_frame_from_vi(VIDEO_FRAME_INFO_S* frame)
 
     _frame.stVFrame.u32TimeRef = H264_TimeRef++;
     _frame.stVFrame.u64PTS = TEST_COMM_GetNowUs(); 
-    RK_MPI_VENC_SendFrame(0, frame ,-1);
+    RK_MPI_VENC_SendFrame(0, &_frame ,-1);
 }
 
 void venc::exec_frame_to_codec()

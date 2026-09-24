@@ -34,7 +34,7 @@ extern "C"
 
 #include "mb_pool.h"
 #include "vi.h"
-#include "vpss.h"
+#include "rga.h"
 #include "venc.h"
 #include "rtsp.h"
 
@@ -65,7 +65,7 @@ private:
 
     mb_pool _mb_pool;
     vi _vi;
-    vpss _vpss;
+    rga _rga;
     venc _venc;
     rtsp _rtsp;
 };

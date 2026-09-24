@@ -17,14 +17,27 @@ fsm::~fsm()
 
 bool fsm::init()
 {
+    // RGA
+    rga::settings settings
+    {
+        ._width = _settings._width,
+        ._height = _settings._height,
+        RK_FMT_RGB888
+    };
+    _rga.set_settings(settings);
+    _rga.init();
+
     // MB_POOL
-    _mb_pool.init(_settings._mb_blk_count, _settings._width, _settings._height, _settings._bytes_per_pixel);
+    _mb_pool.init(_settings._mb_blk_count, _rga.get_bgr_size());
     _mb_pool.create_mb_blk(RK_TRUE);
+
+    // RGA BUFFER
+    _rga.create_buffer(_mb_pool.get_mb_blk(0));
 
     // VI
     vi::settings vi_settings 
     {
-        ._path_to_iq_dir =  _settings._path_to_iq_dir,
+        ._path_to_iq_dir = _settings._path_to_iq_dir,
         ._id_camera = _settings._id_camera,
         ._pixel_format = _settings._pixel_format,
         ._width = _settings._width,
@@ -32,19 +45,6 @@ bool fsm::init()
     };
     _vi.set_settings(vi_settings);
     _vi.init();
-
-    // VPSS
-    vpss::settings vpss_setiings
-    {
-        ._width = _settings._width,
-        ._height = _settings._height,
-        ._format_input = RK_FMT_YUV420SP,
-        ._format_output = RK_FMT_RGB888,
-    };
-    _vpss.set_settings(vpss_setiings);
-    _vpss.init();
-
-    RK_MPI_SYS_Bind(_vi.get_chn_bind(), _vpss.get_chn_bind());
 
     // VENC
     venc::settings venc_settings
@@ -75,9 +75,10 @@ bool fsm::start()
 {
     while(1)
     {
-        _vpss.receive_frame();
+        _vi.receive_frame_from_channel();
+        _rga.process_frame(_vi.get_frame());
 
-        _venc.exec_frame_from_vi(_vpss.get_frame());
+        _venc.exec_frame_from_vi(_vi.get_frame());
         _venc.exec_frame_to_codec();
 
         _rtsp.send_frame(
@@ -85,7 +86,7 @@ bool fsm::start()
             _venc.get_codec_frame()->pstPack->u32Len,
             _venc.get_codec_frame()->pstPack->u64PTS
         );
-        _vpss.release_frame();
+        _vi.release_frame();
         _venc.release_frame();
     }
 
@@ -96,8 +97,6 @@ bool fsm::start()
  {
     _mb_pool.release();
     _vi.release();
-    RK_MPI_VPSS_StopGrp(0);
-    RK_MPI_VPSS_DestroyGrp(0);
     _venc.release();
     _rtsp.release();
     RK_MPI_SYS_Exit();

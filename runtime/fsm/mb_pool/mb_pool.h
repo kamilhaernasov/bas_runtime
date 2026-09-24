@@ -20,7 +20,7 @@ public:
     explicit mb_pool();
     ~mb_pool();
 
-    void init(const uint8_t countBlk, const uint16_t width, const uint16_t height, const uint16_t bytesPerPixel);
+    void init(const uint8_t countBlk, const uint32_t size);
     void release();
 
     MB_BLK create_mb_blk(const RK_BOOL block);
@@ -31,7 +31,5 @@ private:
     MB_POOL _mb_pool;
     std::vector<MB_BLK> _ptrs_mb;
 
-    uint16_t _width;
-    uint16_t _height;
-    uint16_t _bytesPerPixel;
+    uint32_t _size;
 };

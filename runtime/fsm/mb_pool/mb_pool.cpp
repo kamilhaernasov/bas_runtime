@@ -12,16 +12,14 @@ mb_pool::~mb_pool()
 
 }
 
-void mb_pool::init(const uint8_t countBlk, const uint16_t width, const uint16_t height, const uint16_t bytesPerPixel)
+void mb_pool::init(const uint8_t countBlk, const uint32_t size)
 {
     // TODO: проверка на уже выделенный POOL
-    _width = width;
-    _height = height;
-    _bytesPerPixel = bytesPerPixel;
+    _size = size;
 
     MB_POOL_CONFIG_S mb_pool_cfg;
     memset(&mb_pool_cfg, 0, sizeof(MB_POOL_CONFIG_S));
-    mb_pool_cfg.u64MBSize = _width * _height * _bytesPerPixel; // Размер одного блока памяти в пуле. Ширина*высота*3 байта на один цвет
+    mb_pool_cfg.u64MBSize = _size; // Размер одного блока памяти в пуле. Ширина*высота*3 байта на один цвет
 	mb_pool_cfg.u32MBCnt = countBlk; // Количество выделяемых блоков в пуле
 	mb_pool_cfg.enAllocType = MB_ALLOC_TYPE_DMA; // Тим выделяемой памяти. Надо DMA для аппаратных блоков
 	mb_pool_cfg.bPreAlloc = RK_TRUE; // Предварительная аллокация блока вместо ленивого выделения
@@ -30,7 +28,7 @@ void mb_pool::init(const uint8_t countBlk, const uint16_t width, const uint16_t 
 
 MB_BLK mb_pool::create_mb_blk(const RK_BOOL block) // блокировать или нет поток
 {
-    MB_BLK pre_mb = RK_MPI_MB_GetMB(_mb_pool, _width * _height * _bytesPerPixel, block); 
+    MB_BLK pre_mb = RK_MPI_MB_GetMB(_mb_pool, _size, block); 
     if (pre_mb != nullptr)
     {
         _ptrs_mb.push_back(pre_mb);
