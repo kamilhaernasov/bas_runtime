@@ -28,30 +28,32 @@ public:
     {
         uint16_t _width;
         uint16_t _height;
-        PIXEL_FORMAT_E _pixel_format_for_venc;
+        PIXEL_FORMAT_E _pixel_format_out;
+        PIXEL_FORMAT_E _pixel_format_in;
+        _Rga_SURF_FORMAT _pixel_format_in_rga;
+        _Rga_SURF_FORMAT _pixel_format_out_rga;
+        float _pixels_per_byte_out;
+        float _pixels_per_byte_in;
     };
 
     explicit rga();
     ~rga();
 
-    bool init();
+    bool init(MB_BLK ptr_blk);
     void set_settings(const settings settings);
-    bool create_buffer(MB_BLK ptr_blk);
 
     int process_frame(VIDEO_FRAME_INFO_S* ptr_frame);
 
-    uint32_t get_wstride() const;
-    uint32_t get_bgr_size() const;
+    void release();
 private:
+    static constexpr uint8_t ROUND = 15;
+
     settings _settings;
 
-    uint32_t _wstride;
-    uint32_t _bgr_size;
+    uint32_t _buffer_size;
+    uint32_t _size_for_venc;
+    uint32_t _size_from_vi;
 
-    int dst_fd = 0;
-
-    rga_buffer_handle_t _src_handle = 0;
-    rga_buffer_handle_t _dst_handle = 0;
-    rga_buffer_t        _src_rga{};
-    rga_buffer_t        _dst_rga{};
+    rga_buffer_handle_t _handle_buffer_venc = 0;
+    rga_buffer_t _buffer_for_venc {};
 };

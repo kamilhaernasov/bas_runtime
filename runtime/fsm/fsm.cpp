@@ -17,29 +17,30 @@ fsm::~fsm()
 
 bool fsm::init()
 {
+    // MB_POOL
+    _mb_pool.init(_settings._mb_blk_count, _settings._width * _settings._height * _settings._bytes_per_pixel_out);
+    _mb_pool.create_mb_blk(RK_TRUE);
+
     // RGA
     rga::settings settings
     {
         ._width = _settings._width,
         ._height = _settings._height,
-        RK_FMT_RGB888
+        ._pixel_format_out = _settings._pixel_format_out,
+        ._pixel_format_in = _settings._pixel_format_in,
+        ._pixel_format_in_rga = _settings._pixel_format_in_rga,
+        ._pixels_per_byte_out = _settings._bytes_per_pixel_out,
+        ._pixels_per_byte_in = _settings._bytes_per_pixel_in,
     };
     _rga.set_settings(settings);
-    _rga.init();
-
-    // MB_POOL
-    _mb_pool.init(_settings._mb_blk_count, _rga.get_bgr_size());
-    _mb_pool.create_mb_blk(RK_TRUE);
-
-    // RGA BUFFER
-    _rga.create_buffer(_mb_pool.get_mb_blk(0));
+    _rga.init(_mb_pool.get_mb_blk(0));
 
     // VI
     vi::settings vi_settings 
     {
         ._path_to_iq_dir = _settings._path_to_iq_dir,
         ._id_camera = _settings._id_camera,
-        ._pixel_format = _settings._pixel_format,
+        ._pixel_format = _settings._pixel_format_in,
         ._width = _settings._width,
         ._height = _settings._height,
     };
@@ -54,8 +55,8 @@ bool fsm::init()
         ._gop = _settings._venc_gop,
         ._width = _settings._width,
         ._height = _settings._height,
-        ._bytes_per_pixels = _settings._bytes_per_pixel,
-        ._pixel_format = RK_FMT_RGB888,
+        ._bytes_per_pixels = _settings._bytes_per_pixel_out,
+        ._pixel_format = _settings._pixel_format_out,
     };
     _venc.set_settings(venc_settings);
     _venc.init(0, _mb_pool.get_mb_blk(0));
@@ -96,6 +97,7 @@ bool fsm::start()
  bool fsm::release()
  {
     _mb_pool.release();
+    _rga.release();
     _vi.release();
     _venc.release();
     _rtsp.release();

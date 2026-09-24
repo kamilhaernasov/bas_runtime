@@ -46,10 +46,14 @@ public:
         uint16_t _width = 640;
         uint16_t _height = 640;
         uint8_t _mb_blk_count = 1;
-        uint8_t _bytes_per_pixel = 3;
+        float _bytes_per_pixel_out = 3;
+        float _bytes_per_pixel_in = 1.5;
         uint8_t _id_camera = 0;
         std::string _path_to_iq_dir = "/etc/iqfiles";
-        PIXEL_FORMAT_E _pixel_format = RK_FMT_YUV420SP;
+        PIXEL_FORMAT_E _pixel_format_in = RK_FMT_YUV420SP;
+        _Rga_SURF_FORMAT _pixel_format_in_rga = RK_FORMAT_YCbCr_420_SP;
+        _Rga_SURF_FORMAT _pixel_format_out_rga = RK_FORMAT_RGB_888;
+        PIXEL_FORMAT_E _pixel_format_out = RK_FMT_RGB888;
         venc::codec _codec = venc::codec::H264;
         uint8_t _venc_gop = 1;
     };
