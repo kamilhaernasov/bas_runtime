@@ -1,6 +1,9 @@
 #include "fsm.h"
 
 #include <iostream>
+#include "opencv2/core/core.hpp"
+#include "opencv2/highgui/highgui.hpp"
+#include "opencv2/imgproc/imgproc.hpp"
 
 fsm::fsm()
 {
@@ -30,6 +33,19 @@ bool fsm::init()
     _vi.set_settings(vi_settings);
     _vi.init();
 
+    // VPSS
+    vpss::settings vpss_setiings
+    {
+        ._width = _settings._width,
+        ._height = _settings._height,
+        ._format_input = RK_FMT_YUV420SP,
+        ._format_output = RK_FMT_RGB888,
+    };
+    _vpss.set_settings(vpss_setiings);
+    _vpss.init();
+
+    RK_MPI_SYS_Bind(_vi.get_chn_bind(), _vpss.get_chn_bind());
+
     // VENC
     venc::settings venc_settings
     {
@@ -39,7 +55,7 @@ bool fsm::init()
         ._width = _settings._width,
         ._height = _settings._height,
         ._bytes_per_pixels = _settings._bytes_per_pixel,
-        ._pixel_format = _settings._pixel_format,
+        ._pixel_format = RK_FMT_RGB888,
     };
     _venc.set_settings(venc_settings);
     _venc.init(0, _mb_pool.get_mb_blk(0));
@@ -53,11 +69,15 @@ bool fsm::init()
     };
     _rtsp.set_settings(rtsp_settings);
     _rtsp.init();
+}
 
+bool fsm::start()
+{
     while(1)
     {
-        _vi.receive_frame_from_channel();
-        _venc.exec_frame_from_vi(_vi.get_frame());
+        _vpss.receive_frame();
+
+        _venc.exec_frame_from_vi(_vpss.get_frame());
         _venc.exec_frame_to_codec();
 
         _rtsp.send_frame(
@@ -65,16 +85,22 @@ bool fsm::init()
             _venc.get_codec_frame()->pstPack->u32Len,
             _venc.get_codec_frame()->pstPack->u64PTS
         );
-        
-        _vi.release_frame();
+        _vpss.release_frame();
         _venc.release_frame();
     }
 
+    return true;
+}
+
+ bool fsm::release()
+ {
     _mb_pool.release();
     _vi.release();
+    RK_MPI_VPSS_StopGrp(0);
+    RK_MPI_VPSS_DestroyGrp(0);
     _venc.release();
     _rtsp.release();
     RK_MPI_SYS_Exit();
 
     return true;
-}
+ }

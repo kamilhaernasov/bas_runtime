@@ -12,36 +12,32 @@ extern "C"
     #include "rk_aiq.h"
     #include "sample_comm.h"
     #include "rtsp_demo.h"
+    #include "rk_mpi_vpss.h"
 };
 
-class vi
+class vpss
 {
 public:
     struct settings
     {
-        std::string _path_to_iq_dir;
-        uint8_t _id_camera;
-        PIXEL_FORMAT_E _pixel_format;
         uint16_t _width;
         uint16_t _height;
+        PIXEL_FORMAT_E _format_input;
+        PIXEL_FORMAT_E _format_output;
     };
 
-    explicit vi();
-    ~vi();
+    explicit vpss();
+    ~vpss();
 
+    bool init();
     void set_settings(const settings settings);
-    void init();
-    void release();
-
-    VIDEO_FRAME_INFO_S* get_frame();
-    bool receive_frame_from_channel();
-
-    void release_frame();
-
     MPP_CHN_S* get_chn_bind();
+    bool receive_frame();
+    VIDEO_FRAME_INFO_S* get_frame();
+    bool release_frame();
 private:
     settings _settings;
-
     MPP_CHN_S _mpp_chn;
+
     VIDEO_FRAME_INFO_S _frame;
 };

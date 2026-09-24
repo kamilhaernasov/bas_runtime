@@ -107,6 +107,10 @@ void vi::init()
     {
 		printf("ERROR: create VI error! ret=%d\n", ret);
 	}
+
+	_mpp_chn.enModId = RK_ID_VI;
+    _mpp_chn.s32DevId = _settings._id_camera;
+    _mpp_chn.s32ChnId = 0;
 }
 
 void vi::release()
@@ -135,4 +139,9 @@ bool vi::receive_frame_from_channel()
 void vi::release_frame()
 {
 	RK_MPI_VI_ReleaseChnFrame(0, 0, &_frame);
+}
+
+MPP_CHN_S* vi::get_chn_bind()
+{
+	return &_mpp_chn;
 }

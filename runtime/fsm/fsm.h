@@ -34,6 +34,7 @@ extern "C"
 
 #include "mb_pool.h"
 #include "vi.h"
+#include "vpss.h"
 #include "venc.h"
 #include "rtsp.h"
 
@@ -57,11 +58,14 @@ public:
     ~fsm();
 
     bool init();
+    bool start();
+    bool release();
 private:
     settings _settings;
 
     mb_pool _mb_pool;
     vi _vi;
+    vpss _vpss;
     venc _venc;
     rtsp _rtsp;
 };
