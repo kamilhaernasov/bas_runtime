@@ -29,6 +29,7 @@ bool fsm::init()
         ._pixel_format_out = _settings._pixel_format_out,
         ._pixel_format_in = _settings._pixel_format_in,
         ._pixel_format_in_rga = _settings._pixel_format_in_rga,
+        ._pixel_format_out_rga = _settings._pixel_format_out_rga,
         ._pixels_per_byte_out = _settings._bytes_per_pixel_out,
         ._pixels_per_byte_in = _settings._bytes_per_pixel_in,
     };

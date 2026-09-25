@@ -13,13 +13,14 @@ rga::~rga()
 
 bool rga::init(MB_BLK ptr_blk)
 {
-    // Ширина с выравниванием под 16 байт
     _buffer_size = _settings._width * _settings._height * _settings._pixels_per_byte_out;
 
     _size_for_venc = _settings._width * _settings._height * _settings._pixels_per_byte_out;
     _size_from_vi = _settings._width * _settings._height * _settings._pixels_per_byte_in;
 
     _handle_buffer_venc = importbuffer_fd(RK_MPI_MB_Handle2Fd(ptr_blk), _size_for_venc);
+
+    memset(&_buffer_for_venc, 0, sizeof(_buffer_for_venc));
 
     _buffer_for_venc = wrapbuffer_handle(_handle_buffer_venc, _settings._width, _settings._height, _settings._pixel_format_out_rga);
     _buffer_for_venc.wstride = _settings._width;
