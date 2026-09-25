@@ -38,15 +38,17 @@ public:
 
     void set_settings(const settings settings);
 
-    void init(const uint16_t channel, MB_BLK ptr_blk);
-    void release();
+    bool init(const uint16_t channel, MB_BLK ptr_blk);
+    bool release();
 
-    void exec_frame_from_vi(VIDEO_FRAME_INFO_S* frame);
-    void exec_frame_to_codec();
+    bool prepare_frame(VIDEO_FRAME_INFO_S* frame);
+    bool process_frame();
+    
     VENC_STREAM_S* get_codec_frame();
-
-    void release_frame();
+    bool release_codec_frame();
 private:
+    uint64_t get_current_time_us() const;
+
     settings _settings;
 
     uint16_t _channel;

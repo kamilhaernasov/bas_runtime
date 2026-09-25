@@ -1,9 +1,10 @@
 #include "venc.h"
 
-RK_U64 TEST_COMM_GetNowUs() {
-	struct timespec time = {0, 0};
-	clock_gettime(CLOCK_MONOTONIC, &time);
-	return (RK_U64)time.tv_sec * 1000000 + (RK_U64)time.tv_nsec / 1000; /* microseconds */
+uint64_t venc::get_current_time_us() const
+{
+    static struct timespec time = {0, 0};
+    clock_gettime(CLOCK_MONOTONIC, &time);
+    return time.tv_sec * 1000000 + time.tv_nsec / 1000;
 }
 
 venc::venc()
@@ -21,8 +22,10 @@ void venc::set_settings(const settings settings)
     _settings = settings;
 }
 
-void venc::init(const uint16_t channel, MB_BLK ptr_blk)
+bool venc::init(const uint16_t channel, MB_BLK ptr_blk)
 {
+    int ret = 0;
+
     _codec_frame.pstPack = (VENC_PACK_S *)malloc(sizeof(VENC_PACK_S));
 
 	_frame.stVFrame.u32Width = _settings._width;
@@ -36,10 +39,7 @@ void venc::init(const uint16_t channel, MB_BLK ptr_blk)
     _channel = channel;
 
     VENC_CHN_ATTR_S venc_chn_attr;
-    VENC_RECV_PIC_PARAM_S venc_pic_param;
-
     memset(&venc_chn_attr, 0, sizeof(VENC_CHN_ATTR_S));
-	memset(&venc_pic_param, 0, sizeof(VENC_RECV_PIC_PARAM_S));
 
     switch (_settings._codec)
     {
@@ -59,32 +59,80 @@ void venc::init(const uint16_t channel, MB_BLK ptr_blk)
         venc_chn_attr.stVencAttr.enMirror = MIRROR_NONE;
         break;
     }
+
+    VENC_RECV_PIC_PARAM_S venc_pic_param;
 	memset(&venc_pic_param, 0, sizeof(VENC_RECV_PIC_PARAM_S));
     venc_pic_param.s32RecvPicNum = -1;
 
-    RK_MPI_VENC_CreateChn(_channel, &venc_chn_attr);
-    RK_MPI_VENC_StartRecvFrame(_channel, &venc_pic_param);
+    ret = RK_MPI_VENC_CreateChn(_channel, &venc_chn_attr);
+    if (ret != RK_SUCCESS)
+	{
+		printf("%s: RK_MPI_VENC_CreateChn fail! ret=%x\n", __PRETTY_FUNCTION__, ret);
+		return false;
+	}
+
+    ret = RK_MPI_VENC_StartRecvFrame(_channel, &venc_pic_param);
+    if (ret != RK_SUCCESS)
+	{
+		printf("%s: RK_MPI_VENC_StartRecvFrame fail! ret=%x\n", __PRETTY_FUNCTION__, ret);
+		return false;
+	}
+
+    return true;
 }
 
-void venc::release()
+bool venc::release()
 {
-    RK_MPI_VENC_StopRecvFrame(_channel);
-	RK_MPI_VENC_DestroyChn(_channel);
+    int ret = 0;
+
+    ret = RK_MPI_VENC_StopRecvFrame(_channel);
+    if (ret != RK_SUCCESS)
+	{
+		printf("%s: RK_MPI_VENC_StopRecvFrame fail! ret=%x\n", __PRETTY_FUNCTION__, ret);
+		return false;
+	}
+
+	ret = RK_MPI_VENC_DestroyChn(_channel);
+    if (ret != RK_SUCCESS)
+	{
+		printf("%s: RK_MPI_VENC_DestroyChn fail! ret=%x\n", __PRETTY_FUNCTION__, ret);
+		return false;
+	}
+
 	free(_codec_frame.pstPack);
+
+    return true;
 }
 
-void venc::exec_frame_from_vi(VIDEO_FRAME_INFO_S* frame)
+bool venc::prepare_frame(VIDEO_FRAME_INFO_S* frame)
 {
+    int ret = 0;
     static RK_U32 H264_TimeRef = 0; 
 
     _frame.stVFrame.u32TimeRef = H264_TimeRef++;
-    _frame.stVFrame.u64PTS = TEST_COMM_GetNowUs(); 
-    RK_MPI_VENC_SendFrame(0, &_frame ,-1);
+    _frame.stVFrame.u64PTS = get_current_time_us(); 
+    
+    ret = RK_MPI_VENC_SendFrame(_channel, &_frame ,-1);
+    if (ret != RK_SUCCESS)
+	{
+		printf("%s: RK_MPI_VENC_SendFrame fail! ret=%x\n", __PRETTY_FUNCTION__, ret);
+		return false;
+	}
+
+    return true;
 }
 
-void venc::exec_frame_to_codec()
+bool venc::process_frame()
 {
-    RK_MPI_VENC_GetStream(0, &_codec_frame, -1);
+    int ret = 0;
+
+    ret = RK_MPI_VENC_GetStream(_channel, &_codec_frame, -1);
+    if (ret != RK_SUCCESS)
+	{
+		printf("%s: RK_MPI_VENC_SendFrame fail! ret=%x\n", __PRETTY_FUNCTION__, ret);
+		return false;
+	}
+    return true;
 }
 
 VENC_STREAM_S* venc::get_codec_frame()
@@ -92,7 +140,16 @@ VENC_STREAM_S* venc::get_codec_frame()
     return &_codec_frame;
 }
 
-void venc::release_frame()
+bool venc::release_codec_frame()
 {
-    RK_MPI_VENC_ReleaseStream(0, &_codec_frame);
+    int ret = 0;
+
+    ret = RK_MPI_VENC_ReleaseStream(_channel, &_codec_frame);
+    if (ret != RK_SUCCESS)
+	{
+		printf("%s: RK_MPI_VENC_ReleaseStream fail! ret=%x\n", __PRETTY_FUNCTION__, ret);
+		return false;
+	}
+
+    return true;
 }

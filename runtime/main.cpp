@@ -10,8 +10,12 @@ int main(int argc, char *argv[])
 
     fsm bas_fsm;
     set_fsm_settings(bas_fsm, "config.ini");
-    bas_fsm.init();
-    bas_fsm.start();
+    
+    if (bas_fsm.init())
+    {
+        bas_fsm.start();
+    }
+
     bas_fsm.release();
 }
 

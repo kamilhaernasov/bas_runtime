@@ -14,7 +14,7 @@ mb_pool::~mb_pool()
 
 bool mb_pool::init(const uint8_t countBlk, const uint32_t size)
 {
-    if (_mb_pool == MB_INVALID_POOLID)
+    if (_mb_pool != MB_INVALID_POOLID)
     {
         printf("%s: mb_pool already exist!\n", __PRETTY_FUNCTION__);
         return false;
@@ -90,4 +90,20 @@ bool mb_pool::release()
 void* mb_pool::get_ptr_from_mb_blk(MB_BLK blk)
 {
     return RK_MPI_MB_Handle2VirAddr(blk);
+}
+
+bool mb_pool::mmz_flush_cache(const uint8_t index)
+{
+    int ret = RK_MPI_SYS_MmzFlushCache(
+        get_mb_blk(index),
+        RK_FALSE
+    );
+
+    if (ret != 0)
+    {
+        printf("%s: RK_MPI_SYS_MmzFlushCache fail! Desc: %d\n", __PRETTY_FUNCTION__, ret);
+        return false;
+    }
+
+    return true;
 }

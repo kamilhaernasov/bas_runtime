@@ -67,7 +67,7 @@ bool rga::process_frame(VIDEO_FRAME_INFO_S* ptr_frame)
     );
 
     // Проверяем буферы vi и venc
-    int ret = imcheck(buffer_from_vi, _buffer_for_venc, {}, {});
+    ret = imcheck(buffer_from_vi, _buffer_for_venc, {}, {});
     if (ret != IM_STATUS_NOERROR) 
     {
         printf("%s: imcheck fail! Desc: %s\n", __PRETTY_FUNCTION__, imStrError((IM_STATUS)ret));
@@ -99,9 +99,9 @@ bool rga::process_frame(VIDEO_FRAME_INFO_S* ptr_frame)
     }
 
     ret = releasebuffer_handle(handle_buffer_vi);
-    if (ret != IM_STATUS_NOERROR)
+    if (ret != IM_STATUS_SUCCESS)
     {
-        printf("%s: releasebuffer_handle fail! Desc: %s\n", __PRETTY_FUNCTION__, imStrError((IM_STATUS)ret));
+        printf("%s: releasebuffer_handle fail! Desc: %s, ret: %d\n", __PRETTY_FUNCTION__, imStrError((IM_STATUS)ret), ret);
         return false;
     }
 

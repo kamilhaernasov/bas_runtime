@@ -50,7 +50,6 @@ add_executable(${PROJECT_NAME}
     ${CMAKE_SOURCE_DIR}/runtime/fsm/vi/vi.cpp
     ${CMAKE_SOURCE_DIR}/runtime/fsm/venc/venc.cpp
     ${CMAKE_SOURCE_DIR}/runtime/fsm/rtsp/rtsp.cpp
-    ${CMAKE_SOURCE_DIR}/runtime/fsm/vpss/vpss.cpp
     ${CMAKE_SOURCE_DIR}/runtime/fsm/rga/rga.cpp
 )
 
@@ -110,7 +109,6 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_SOURCE_DIR}/runtime/fsm/vi  
     ${CMAKE_SOURCE_DIR}/runtime/fsm/venc
     ${CMAKE_SOURCE_DIR}/runtime/fsm/rtsp     
-    ${CMAKE_SOURCE_DIR}/runtime/fsm/vpss 
     ${CMAKE_SOURCE_DIR}/runtime/fsm/rga                             
     ${OpenCV_INCLUDE_DIRS}
     ${CMAKE_SOURCE_DIR}

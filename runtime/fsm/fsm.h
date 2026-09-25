@@ -67,6 +67,8 @@ public:
 private:
     settings _settings;
 
+    bool inited = false;
+
     mb_pool _mb_pool;
     vi _vi;
     rga _rga;

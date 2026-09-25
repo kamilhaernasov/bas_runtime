@@ -18,8 +18,17 @@ fsm::~fsm()
 bool fsm::init()
 {
     // MB_POOL
-    _mb_pool.init(_settings._mb_blk_count, _settings._width * _settings._height * _settings._bytes_per_pixel_out);
-    _mb_pool.create_mb_blk(RK_TRUE);
+    if (!_mb_pool.init(_settings._mb_blk_count, _settings._width * _settings._height * _settings._bytes_per_pixel_out))
+    {
+        return false;
+    };
+    printf("%s: _mb_pool.init: ok\n", __PRETTY_FUNCTION__);
+
+    if (_mb_pool.create_mb_blk(RK_TRUE) == MB_INVALID_HANDLE)
+    {
+        return false;
+    };
+    printf("%s: _mb_pool.create_mb_blk: ok\n", __PRETTY_FUNCTION__);
 
     // RGA
     rga::settings settings
@@ -34,7 +43,11 @@ bool fsm::init()
         ._pixels_per_byte_in = _settings._bytes_per_pixel_in,
     };
     _rga.set_settings(settings);
-    _rga.init(_mb_pool.get_mb_blk(0));
+    if (!_rga.init(_mb_pool.get_mb_blk(0)))
+    {
+        return false;
+    };
+    printf("%s: _rga.init: ok\n", __PRETTY_FUNCTION__);
 
     // VI
     vi::settings vi_settings 
@@ -46,7 +59,11 @@ bool fsm::init()
         ._height = _settings._height,
     };
     _vi.set_settings(vi_settings);
-    _vi.init();
+    if(!_vi.init())
+    {
+        return false;
+    };
+    printf("%s: _vi.init: ok\n", __PRETTY_FUNCTION__);
 
     // VENC
     venc::settings venc_settings
@@ -60,7 +77,11 @@ bool fsm::init()
         ._pixel_format = _settings._pixel_format_out,
     };
     _venc.set_settings(venc_settings);
-    _venc.init(0, _mb_pool.get_mb_blk(0));
+    if (!_venc.init(0, _mb_pool.get_mb_blk(0)))
+    {
+        return false;
+    };
+    printf("%s: _venc.init: ok\n", __PRETTY_FUNCTION__);
 
     // RTSP
     rtsp::settings rtsp_settings
@@ -70,55 +91,64 @@ bool fsm::init()
         ._codec_rtsp = RTSP_CODEC_ID_VIDEO_H264,
     };
     _rtsp.set_settings(rtsp_settings);
-    _rtsp.init();
+    if (!_rtsp.init())
+    {
+        return false;
+    };
+    printf("%s: _rtsp.init: ok\n", __PRETTY_FUNCTION__);
+
+    return true;
 }
 
 bool fsm::start()
 {
-    int64 last_tick = cv::getTickCount();
-    int   frames    = 0;
-    double fps      = 0.0;
-
+    bool is_failed;
     while(1)
     {
-        _vi.receive_frame_from_channel();
-        _rga.process_frame(_vi.get_frame());
-
-    // --- FPS счётчик ---
-        frames++;
-        int64 now = cv::getTickCount();
-        double elapsed = (now - last_tick) / cv::getTickFrequency();
-        if (elapsed >= 1.0) {
-            fps = frames / elapsed;
-            frames = 0;
-            last_tick = now;
+        is_failed = false;
+        // Получаем фрейм с VI
+        if (!_vi.receive_frame_from_channel())
+        {
+            is_failed = true;
         }
-
+        // Обработка в RGA
+        if (!is_failed && !_rga.process_frame(_vi.get_last_frame()))
+        {
+            is_failed = true;
+        };
+        // Получаем указатель на фрейм после rga
         void* frame_after_rga = _mb_pool.get_ptr_from_mb_blk(_mb_pool.get_mb_blk(0));
-        cv::Mat rgb(_settings._height, _settings._width, CV_8UC3, frame_after_rga);
-
-        char text[32];
-        std::snprintf(text, sizeof(text), "FPS: %.1f", fps);
-        cv::putText(rgb, text, {20, 40}, cv::FONT_HERSHEY_SIMPLEX,
-                    1.0, {0, 0, 0}, 4, cv::LINE_AA);   // обводка
-        cv::putText(rgb, text, {20, 40}, cv::FONT_HERSHEY_SIMPLEX,
-                    1.0, {0, 255, 0}, 2, cv::LINE_AA); // текст
-
-        RK_MPI_SYS_MmzFlushCache(
-            _mb_pool.get_mb_blk(0),
-            RK_FALSE
-        );
-
-        _venc.exec_frame_from_vi(_vi.get_frame());
-        _venc.exec_frame_to_codec();
-
-        _rtsp.send_frame(
+        if (!is_failed && frame_after_rga == nullptr)
+        {
+            is_failed = true;
+        }
+        // Сбрасываем кэш, иначе мерцает open-cv
+        if (!is_failed && !_mb_pool.mmz_flush_cache(0))
+        {
+            is_failed = true;
+        }
+        // Отправляем rga frame в venc (берется с VI, но он обработан RGA!)
+        if (!is_failed && !_venc.prepare_frame(_vi.get_last_frame()))
+        {
+            is_failed = true;
+        }
+        // Переводим в нужный кодек
+        if(!is_failed && !_venc.process_frame())
+        {
+            is_failed = true;
+        }
+        // Отправляем в rtsp
+        if (!is_failed && !_rtsp.process_frame(
             reinterpret_cast<uint8_t*>(_mb_pool.get_ptr_from_mb_blk(_venc.get_codec_frame()->pstPack->pMbBlk)), 
             _venc.get_codec_frame()->pstPack->u32Len,
             _venc.get_codec_frame()->pstPack->u64PTS
-        );
+        ))
+        {
+            is_failed = true;
+        }
+        // Очищаем 
         _vi.release_frame();
-        _venc.release_frame();
+        _venc.release_codec_frame();
     }
 
     return true;
@@ -131,6 +161,7 @@ bool fsm::start()
     _vi.release();
     _venc.release();
     _rtsp.release();
+    // Обязательно
     RK_MPI_SYS_Exit();
 
     return true;

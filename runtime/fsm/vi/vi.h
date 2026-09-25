@@ -30,18 +30,19 @@ public:
     ~vi();
 
     void set_settings(const settings settings);
-    void init();
-    void release();
+    bool init();
+    bool release();
 
-    VIDEO_FRAME_INFO_S* get_frame();
+    VIDEO_FRAME_INFO_S* get_last_frame();
     bool receive_frame_from_channel();
 
-    void release_frame();
-
-    MPP_CHN_S* get_chn_bind();
+    bool release_frame();
 private:
     settings _settings;
 
-    MPP_CHN_S _mpp_chn;
+    int _dev_id = 0;
+    int _pipe_id = 0;
+    int _chn_id = 0;
+
     VIDEO_FRAME_INFO_S _frame;
 };

@@ -27,15 +27,15 @@ public:
     explicit rtsp();
     ~rtsp();
 
-    void init();
+    bool init();
     void release();
     
     void set_settings(const settings settings);
 
-    void send_frame(uint8_t* ptr_data, const uint32_t len_data, const uint64_t pts_data);
+    bool process_frame(uint8_t* ptr_data, const uint32_t len_data, const uint64_t pts_data);
 private:
     settings _settings;
 
-    rtsp_demo_handle _rtsp_handle;
-    rtsp_session_handle _rtsp_session;
+    rtsp_demo_handle _rtsp_handle = nullptr;
+    rtsp_session_handle _rtsp_session = nullptr;
 };
