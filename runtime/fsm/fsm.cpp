@@ -75,16 +75,45 @@ bool fsm::init()
 
 bool fsm::start()
 {
+    int64 last_tick = cv::getTickCount();
+    int   frames    = 0;
+    double fps      = 0.0;
+
     while(1)
     {
         _vi.receive_frame_from_channel();
         _rga.process_frame(_vi.get_frame());
 
+    // --- FPS счётчик ---
+        frames++;
+        int64 now = cv::getTickCount();
+        double elapsed = (now - last_tick) / cv::getTickFrequency();
+        if (elapsed >= 1.0) {
+            fps = frames / elapsed;
+            frames = 0;
+            last_tick = now;
+        }
+
+        void* frame_after_rga = _mb_pool.get_ptr_from_mb_blk(_mb_pool.get_mb_blk(0));
+        cv::Mat rgb(_settings._height, _settings._width, CV_8UC3, frame_after_rga);
+
+        char text[32];
+        std::snprintf(text, sizeof(text), "FPS: %.1f", fps);
+        cv::putText(rgb, text, {20, 40}, cv::FONT_HERSHEY_SIMPLEX,
+                    1.0, {0, 0, 0}, 4, cv::LINE_AA);   // обводка
+        cv::putText(rgb, text, {20, 40}, cv::FONT_HERSHEY_SIMPLEX,
+                    1.0, {0, 255, 0}, 2, cv::LINE_AA); // текст
+
+        RK_MPI_SYS_MmzFlushCache(
+            _mb_pool.get_mb_blk(0),
+            RK_FALSE
+        );
+
         _venc.exec_frame_from_vi(_vi.get_frame());
         _venc.exec_frame_to_codec();
 
         _rtsp.send_frame(
-            reinterpret_cast<uint8_t*>(_mb_pool.get_handle_from_mb_blk(_venc.get_codec_frame()->pstPack->pMbBlk)), 
+            reinterpret_cast<uint8_t*>(_mb_pool.get_ptr_from_mb_blk(_venc.get_codec_frame()->pstPack->pMbBlk)), 
             _venc.get_codec_frame()->pstPack->u32Len,
             _venc.get_codec_frame()->pstPack->u64PTS
         );

@@ -42,15 +42,14 @@ public:
     bool init(MB_BLK ptr_blk);
     void set_settings(const settings settings);
 
-    int process_frame(VIDEO_FRAME_INFO_S* ptr_frame);
+    bool process_frame(VIDEO_FRAME_INFO_S* ptr_frame);
 
-    void release();
+    bool release();
 private:
     static constexpr uint8_t ROUND = 15;
 
     settings _settings;
 
-    uint32_t _buffer_size;
     uint32_t _size_for_venc;
     uint32_t _size_from_vi;
 

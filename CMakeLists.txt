@@ -68,12 +68,14 @@ find_package(OpenCV REQUIRED QUIET)
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
 # Inih
-add_library(inih STATIC
-    ${CMAKE_SOURCE_DIR}/externals/inih/cpp/INIReader.cpp
-)
-target_include_directories(inih PUBLIC
-    ${CMAKE_SOURCE_DIR}/externals/inih/cpp
-)
+# add_library(inih STATIC
+#     ${CMAKE_SOURCE_DIR}/externals/inih/ini.c
+#     ${CMAKE_SOURCE_DIR}/externals/inih/cpp/INIReader.cpp
+# )
+# target_include_directories(inih PUBLIC
+#     ${CMAKE_SOURCE_DIR}/externals/inih
+#     ${CMAKE_SOURCE_DIR}/externals/inih/cpp
+# )
 
 # ---- Options ----
 # Compiler
@@ -98,7 +100,7 @@ target_link_libraries(${PROJECT_NAME}
     pthread
     rtsp
     rga
-    inih
+    #inih
 )
 
 # ---- Include dirs ----

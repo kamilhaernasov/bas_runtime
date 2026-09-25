@@ -43,8 +43,8 @@ class fsm
 public:
     struct settings
     {
-        uint16_t _width = 640;
-        uint16_t _height = 640;
+        uint16_t _width = 1920;
+        uint16_t _height = 1080;
         uint8_t _mb_blk_count = 1;
         float _bytes_per_pixel_out = 3;
         float _bytes_per_pixel_in = 1.5;

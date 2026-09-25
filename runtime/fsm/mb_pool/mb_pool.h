@@ -20,15 +20,15 @@ public:
     explicit mb_pool();
     ~mb_pool();
 
-    void init(const uint8_t countBlk, const uint32_t size);
-    void release();
+    bool init(const uint8_t countBlk, const uint32_t size);
+    bool release();
 
     MB_BLK create_mb_blk(const RK_BOOL block);
     MB_BLK get_mb_blk(const uint8_t index);
 
-    void* get_handle_from_mb_blk(MB_BLK blk);
+    void* get_ptr_from_mb_blk(MB_BLK blk);
 private:
-    MB_POOL _mb_pool;
+    MB_POOL _mb_pool = MB_INVALID_POOLID ;
     std::vector<MB_BLK> _ptrs_mb;
 
     uint32_t _size;
