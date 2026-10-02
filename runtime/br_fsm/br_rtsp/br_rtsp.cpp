@@ -1,16 +1,16 @@
-#include "rtsp.h"
+#include "br_rtsp.h"
 
-rtsp::rtsp()
+br_rtsp::br_rtsp()
 {
 
 }
 
-rtsp::~rtsp()
+br_rtsp::~br_rtsp()
 {
 
 }
 
-bool rtsp::init()
+bool br_rtsp::init()
 {
     int ret = 0;
     // создание сервера на порту 554
@@ -44,7 +44,7 @@ bool rtsp::init()
     return true;
 }
 
-void rtsp::release()
+void br_rtsp::release()
 {
 	if (_rtsp_handle)
     {
@@ -52,12 +52,12 @@ void rtsp::release()
     }
 }
 
-void rtsp::set_settings(const settings settings)
+void br_rtsp::set_settings(const settings settings)
 {
     _settings = settings;
 }
 
-bool rtsp::process_frame(uint8_t* ptr_data, const uint32_t len_data, const uint64_t pts_data)
+bool br_rtsp::process_frame(uint8_t* ptr_data, const uint32_t len_data, const uint64_t pts_data)
 {
     int ret = 0;
 

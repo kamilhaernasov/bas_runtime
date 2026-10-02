@@ -14,7 +14,7 @@ extern "C"
     #include "rtsp_demo.h"
 };
 
-class venc
+class br_venc
 {
 public:
     enum class codec
@@ -33,15 +33,15 @@ public:
         rkPIXEL_FORMAT_E _pixel_format;
     };
 
-    explicit venc();
-    ~venc();
+    explicit br_venc();
+    ~br_venc();
 
     void set_settings(const settings settings);
 
     bool init(const uint16_t channel, MB_BLK ptr_blk);
     bool release();
 
-    bool prepare_frame(VIDEO_FRAME_INFO_S* frame);
+    bool prepare_frame();
     bool process_frame();
     
     VENC_STREAM_S* get_codec_frame();

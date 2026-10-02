@@ -1,28 +1,28 @@
-#include "venc.h"
+#include "br_venc.h"
 
-uint64_t venc::get_current_time_us() const
+uint64_t br_venc::get_current_time_us() const
 {
     static struct timespec time = {0, 0};
     clock_gettime(CLOCK_MONOTONIC, &time);
     return time.tv_sec * 1000000 + time.tv_nsec / 1000;
 }
 
-venc::venc()
+br_venc::br_venc()
 {
 
 }
 
-venc::~venc()
+br_venc::~br_venc()
 {
 
 }
 
-void venc::set_settings(const settings settings)
+void br_venc::set_settings(const settings settings)
 {
     _settings = settings;
 }
 
-bool venc::init(const uint16_t channel, MB_BLK ptr_blk)
+bool br_venc::init(const uint16_t channel, MB_BLK ptr_blk)
 {
     int ret = 0;
 
@@ -81,7 +81,7 @@ bool venc::init(const uint16_t channel, MB_BLK ptr_blk)
     return true;
 }
 
-bool venc::release()
+bool br_venc::release()
 {
     int ret = 0;
 
@@ -104,7 +104,7 @@ bool venc::release()
     return true;
 }
 
-bool venc::prepare_frame(VIDEO_FRAME_INFO_S* frame)
+bool br_venc::prepare_frame()
 {
     int ret = 0;
     static RK_U32 H264_TimeRef = 0; 
@@ -122,7 +122,7 @@ bool venc::prepare_frame(VIDEO_FRAME_INFO_S* frame)
     return true;
 }
 
-bool venc::process_frame()
+bool br_venc::process_frame()
 {
     int ret = 0;
 
@@ -135,12 +135,12 @@ bool venc::process_frame()
     return true;
 }
 
-VENC_STREAM_S* venc::get_codec_frame()
+VENC_STREAM_S* br_venc::get_codec_frame()
 {
     return &_codec_frame;
 }
 
-bool venc::release_codec_frame()
+bool br_venc::release_codec_frame()
 {
     int ret = 0;
 

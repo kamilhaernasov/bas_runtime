@@ -1,21 +1,21 @@
-#include "vi.h"
+#include "br_vi.h"
 
-vi::vi()
+br_vi::br_vi()
 {
 
 }
 
-vi::~vi()
+br_vi::~br_vi()
 {
 
 }
 
-void vi::set_settings(const settings settings)
+void br_vi::set_settings(const settings settings)
 {
     _settings = settings;
 }
 
-bool vi::init()
+bool br_vi::init()
 {
 	int32_t ret = 0;
 
@@ -139,7 +139,7 @@ bool vi::init()
 	return true;
 }
 
-bool vi::release()
+bool br_vi::release()
 {
 	int ret = 0;
 
@@ -167,12 +167,12 @@ bool vi::release()
 	return true;
 }
 
-VIDEO_FRAME_INFO_S* vi::get_last_frame()
+VIDEO_FRAME_INFO_S* br_vi::get_last_frame()
 {
     return &_frame;
 }
 
-bool vi::receive_frame_from_channel()
+bool br_vi::receive_frame_from_channel()
 {
 	// -1 - режим блокировки, ждем кадр
     int ret = RK_MPI_VI_GetChnFrame(_pipe_id, _chn_id, &_frame, -1);
@@ -185,7 +185,7 @@ bool vi::receive_frame_from_channel()
     return true;
 }
 
-bool vi::release_frame()
+bool br_vi::release_frame()
 {
 	int ret = RK_MPI_VI_ReleaseChnFrame(_pipe_id, _chn_id, &_frame);
 	if (ret != RK_SUCCESS)

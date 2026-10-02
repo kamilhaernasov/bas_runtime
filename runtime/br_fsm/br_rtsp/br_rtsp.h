@@ -14,7 +14,7 @@ extern "C"
     #include "rtsp_demo.h"
 };
 
-class rtsp
+class br_rtsp
 {
 public:
     struct settings
@@ -24,8 +24,8 @@ public:
         rtsp_codec_id _codec_rtsp;
     };
 
-    explicit rtsp();
-    ~rtsp();
+    explicit br_rtsp();
+    ~br_rtsp();
 
     bool init();
     void release();

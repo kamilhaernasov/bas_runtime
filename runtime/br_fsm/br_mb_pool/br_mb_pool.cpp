@@ -1,22 +1,22 @@
-#include "mb_pool.h"
+#include "br_mb_pool.h"
 
 #include <cstring>
 
-mb_pool::mb_pool()
+br_mb_pool::br_mb_pool()
 {
 
 }
 
-mb_pool::~mb_pool()
+br_mb_pool::~br_mb_pool()
 {
 
 }
 
-bool mb_pool::init(const uint8_t countBlk, const uint32_t size)
+bool br_mb_pool::init(const uint8_t countBlk, const uint32_t size)
 {
     if (_mb_pool != MB_INVALID_POOLID)
     {
-        printf("%s: mb_pool already exist!\n", __PRETTY_FUNCTION__);
+        printf("%s: br_mb_pool already exist!\n", __PRETTY_FUNCTION__);
         return false;
     }
     _size = size;
@@ -42,7 +42,7 @@ bool mb_pool::init(const uint8_t countBlk, const uint32_t size)
     return true;
 }
 
-MB_BLK mb_pool::create_mb_blk(const RK_BOOL block) // блокировать или нет поток
+MB_BLK br_mb_pool::create_mb_blk(const RK_BOOL block) // блокировать или нет поток
 {
     MB_BLK pre_mb = RK_MPI_MB_GetMB(_mb_pool, _size, block); 
     if (pre_mb == MB_INVALID_HANDLE)
@@ -55,7 +55,7 @@ MB_BLK mb_pool::create_mb_blk(const RK_BOOL block) // блокировать и�
     return pre_mb;
 }
 
-MB_BLK mb_pool::get_mb_blk(const uint8_t index)
+MB_BLK br_mb_pool::get_mb_blk(const uint8_t index)
 {
     if (index < _ptrs_mb.size())
     {
@@ -65,7 +65,7 @@ MB_BLK mb_pool::get_mb_blk(const uint8_t index)
     return MB_INVALID_HANDLE;
 }
 
-bool mb_pool::release()
+bool br_mb_pool::release()
 {
     int ret = 0;
     for (auto it = _ptrs_mb.begin(); it != _ptrs_mb.end(); ++it) 
@@ -87,12 +87,12 @@ bool mb_pool::release()
     return true;
 }
 
-void* mb_pool::get_ptr_from_mb_blk(MB_BLK blk)
+void* br_mb_pool::get_ptr_from_mb_blk(MB_BLK blk)
 {
     return RK_MPI_MB_Handle2VirAddr(blk);
 }
 
-bool mb_pool::mmz_flush_cache(const uint8_t index)
+bool br_mb_pool::mmz_flush_cache(const uint8_t index)
 {
     int ret = RK_MPI_SYS_MmzFlushCache(
         get_mb_blk(index),

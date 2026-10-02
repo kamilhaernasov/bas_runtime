@@ -1,7 +1,7 @@
 #pragma once
 
 /**
- * @file fsm.h
+ * @file br_fsm.h
  * @author khaernasov-ka
  * @brief Стейт-машина рантайма.
  * @version 0.1
@@ -32,13 +32,13 @@ extern "C"
     #include "rtsp_demo.h"
 };
 
-#include "mb_pool.h"
-#include "vi.h"
-#include "rga.h"
-#include "venc.h"
-#include "rtsp.h"
+#include "br_mb_pool.h"
+#include "br_vi.h"
+#include "br_rga.h"
+#include "br_venc.h"
+#include "br_rtsp.h"
 
-class fsm 
+class br_fsm 
 {
 public:
     struct settings
@@ -54,12 +54,12 @@ public:
         _Rga_SURF_FORMAT _pixel_format_in_rga = RK_FORMAT_YCbCr_420_SP;
         _Rga_SURF_FORMAT _pixel_format_out_rga = RK_FORMAT_RGB_888;
         PIXEL_FORMAT_E _pixel_format_out = RK_FMT_RGB888;
-        venc::codec _codec = venc::codec::H264;
+        br_venc::codec _codec = br_venc::codec::H264;
         uint8_t _venc_gop = 1;
     };
 
-    explicit fsm();
-    ~fsm();
+    explicit br_fsm();
+    ~br_fsm();
 
     bool init();
     bool start();
@@ -69,9 +69,9 @@ private:
 
     bool inited = false;
 
-    mb_pool _mb_pool;
-    vi _vi;
-    rga _rga;
-    venc _venc;
-    rtsp _rtsp;
+    br_mb_pool _mb_pool;
+    br_vi _vi;
+    br_rga _brga;
+    br_venc _venc;
+    br_rtsp _rtsp;
 };

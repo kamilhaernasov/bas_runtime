@@ -1,17 +1,17 @@
-#include "rga.h"
+#include "br_rga.h"
 #include <cstddef>
 
-rga::rga()
+br_rga::br_rga()
 {
 
 }
 
-rga::~rga()
+br_rga::~br_rga()
 {
 
 }
 
-bool rga::init(MB_BLK ptr_blk)
+bool br_rga::init(MB_BLK ptr_blk)
 {
     // Считаем размеры уходящего буфера в venc
     _size_for_venc = _settings._width * _settings._height * _settings._pixels_per_byte_out;
@@ -34,12 +34,12 @@ bool rga::init(MB_BLK ptr_blk)
     return true;
 }
 
-void rga::set_settings(const settings settings)
+void br_rga::set_settings(const settings settings)
 {
     _settings = settings;
 }
 
-bool rga::process_frame(VIDEO_FRAME_INFO_S* ptr_frame)
+bool br_rga::process_frame(VIDEO_FRAME_INFO_S* ptr_frame)
 {
     int ret = 0;
 
@@ -108,7 +108,7 @@ bool rga::process_frame(VIDEO_FRAME_INFO_S* ptr_frame)
     return true;
 }
 
-bool rga::release()
+bool br_rga::release()
 {
     int ret = releasebuffer_handle(_handle_buffer_venc);
     if (ret != IM_STATUS_NOERROR)

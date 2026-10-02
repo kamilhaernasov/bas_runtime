@@ -1,21 +1,21 @@
-#include "fsm.h"
+#include "br_fsm.h"
 
 #include <iostream>
 #include "opencv2/core/core.hpp"
 #include "opencv2/highgui/highgui.hpp"
 #include "opencv2/imgproc/imgproc.hpp"
 
-fsm::fsm()
+br_fsm::br_fsm()
 {
 
 }
 
-fsm::~fsm()
+br_fsm::~br_fsm()
 {
 
 }
 
-bool fsm::init()
+bool br_fsm::init()
 {
     // MB_POOL
     if (!_mb_pool.init(_settings._mb_blk_count, _settings._width * _settings._height * _settings._bytes_per_pixel_out))
@@ -31,7 +31,7 @@ bool fsm::init()
     printf("%s: _mb_pool.create_mb_blk: ok\n", __PRETTY_FUNCTION__);
 
     // RGA
-    rga::settings settings
+    br_rga::settings settings
     {
         ._width = _settings._width,
         ._height = _settings._height,
@@ -42,15 +42,15 @@ bool fsm::init()
         ._pixels_per_byte_out = _settings._bytes_per_pixel_out,
         ._pixels_per_byte_in = _settings._bytes_per_pixel_in,
     };
-    _rga.set_settings(settings);
-    if (!_rga.init(_mb_pool.get_mb_blk(0)))
+    _brga.set_settings(settings);
+    if (!_brga.init(_mb_pool.get_mb_blk(0)))
     {
         return false;
     };
-    printf("%s: _rga.init: ok\n", __PRETTY_FUNCTION__);
+    printf("%s: _brga.init: ok\n", __PRETTY_FUNCTION__);
 
     // VI
-    vi::settings vi_settings 
+    br_vi::settings vi_settings 
     {
         ._path_to_iq_dir = _settings._path_to_iq_dir,
         ._id_camera = _settings._id_camera,
@@ -66,7 +66,7 @@ bool fsm::init()
     printf("%s: _vi.init: ok\n", __PRETTY_FUNCTION__);
 
     // VENC
-    venc::settings venc_settings
+    br_venc::settings venc_settings
     {
         ._codec = _settings._codec,
         ._bitrate = _settings._width * _settings._height / 8 * 30,
@@ -84,7 +84,7 @@ bool fsm::init()
     printf("%s: _venc.init: ok\n", __PRETTY_FUNCTION__);
 
     // RTSP
-    rtsp::settings rtsp_settings
+    br_rtsp::settings rtsp_settings
     {
         ._port = 554,
         ._path = "/live/0",
@@ -100,7 +100,7 @@ bool fsm::init()
     return true;
 }
 
-bool fsm::start()
+bool br_fsm::start()
 {
     bool is_failed;
     while(1)
@@ -112,13 +112,13 @@ bool fsm::start()
             is_failed = true;
         }
         // Обработка в RGA
-        if (!is_failed && !_rga.process_frame(_vi.get_last_frame()))
+        if (!is_failed && !_brga.process_frame(_vi.get_last_frame()))
         {
             is_failed = true;
         };
         // Получаем указатель на фрейм после rga
-        void* frame_after_rga = _mb_pool.get_ptr_from_mb_blk(_mb_pool.get_mb_blk(0));
-        if (!is_failed && frame_after_rga == nullptr)
+        void* frame_after_brga = _mb_pool.get_ptr_from_mb_blk(_mb_pool.get_mb_blk(0));
+        if (!is_failed && frame_after_brga == nullptr)
         {
             is_failed = true;
         }
@@ -127,8 +127,8 @@ bool fsm::start()
         {
             is_failed = true;
         }
-        // Отправляем rga frame в venc (берется с VI, но он обработан RGA!)
-        if (!is_failed && !_venc.prepare_frame(_vi.get_last_frame()))
+        // Отправляем rga frame в venc (кадр уже в mb блоке, с которым работал rga)
+        if (!is_failed && !_venc.prepare_frame())
         {
             is_failed = true;
         }
@@ -154,10 +154,10 @@ bool fsm::start()
     return true;
 }
 
- bool fsm::release()
+ bool br_fsm::release()
  {
     _mb_pool.release();
-    _rga.release();
+    _brga.release();
     _vi.release();
     _venc.release();
     _rtsp.release();

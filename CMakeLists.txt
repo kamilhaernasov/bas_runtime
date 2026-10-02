@@ -45,12 +45,13 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # ---- Exe-xe-xe ----
 add_executable(${PROJECT_NAME} 
     ${CMAKE_SOURCE_DIR}/runtime/main.cpp
-    ${CMAKE_SOURCE_DIR}/runtime/fsm/fsm.cpp
-    ${CMAKE_SOURCE_DIR}/runtime/fsm/mb_pool/mb_pool.cpp
-    ${CMAKE_SOURCE_DIR}/runtime/fsm/vi/vi.cpp
-    ${CMAKE_SOURCE_DIR}/runtime/fsm/venc/venc.cpp
-    ${CMAKE_SOURCE_DIR}/runtime/fsm/rtsp/rtsp.cpp
-    ${CMAKE_SOURCE_DIR}/runtime/fsm/rga/rga.cpp
+    ${CMAKE_SOURCE_DIR}/runtime/br_fsm/br_fsm.cpp
+    ${CMAKE_SOURCE_DIR}/runtime/br_fsm/br_mb_pool/br_mb_pool.cpp
+    ${CMAKE_SOURCE_DIR}/runtime/br_fsm/br_vi/br_vi.cpp
+    ${CMAKE_SOURCE_DIR}/runtime/br_fsm/br_venc/br_venc.cpp
+    ${CMAKE_SOURCE_DIR}/runtime/br_fsm/br_rtsp/br_rtsp.cpp
+    ${CMAKE_SOURCE_DIR}/runtime/br_fsm/br_rga/br_rga.cpp
+    ${CMAKE_SOURCE_DIR}/runtime/br_fsm/br_npu/br_npu.cpp
 )
 
 # ---- Libs ----
@@ -104,12 +105,13 @@ target_link_libraries(${PROJECT_NAME}
 
 # ---- Include dirs ----
 target_include_directories(${PROJECT_NAME} PRIVATE       
-    ${CMAKE_SOURCE_DIR}/runtime/fsm/
-    ${CMAKE_SOURCE_DIR}/runtime/fsm/mb_pool
-    ${CMAKE_SOURCE_DIR}/runtime/fsm/vi  
-    ${CMAKE_SOURCE_DIR}/runtime/fsm/venc
-    ${CMAKE_SOURCE_DIR}/runtime/fsm/rtsp     
-    ${CMAKE_SOURCE_DIR}/runtime/fsm/rga                             
+    ${CMAKE_SOURCE_DIR}/runtime/br_fsm/
+    ${CMAKE_SOURCE_DIR}/runtime/br_fsm/br_mb_pool
+    ${CMAKE_SOURCE_DIR}/runtime/br_fsm/br_vi  
+    ${CMAKE_SOURCE_DIR}/runtime/br_fsm/br_venc
+    ${CMAKE_SOURCE_DIR}/runtime/br_fsm/br_rtsp     
+    ${CMAKE_SOURCE_DIR}/runtime/br_fsm/br_rga     
+    ${CMAKE_SOURCE_DIR}/runtime/br_fsm/br_npu                          
     ${OpenCV_INCLUDE_DIRS}
     ${CMAKE_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/utils

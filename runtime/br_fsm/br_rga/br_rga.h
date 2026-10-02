@@ -21,7 +21,7 @@ extern "C"
 #include "RgaUtils.h"
 #include "im2d_buffer.h"
 
-class rga
+class br_rga
 {
 public:
     struct settings
@@ -36,8 +36,8 @@ public:
         float _pixels_per_byte_in;
     };
 
-    explicit rga();
-    ~rga();
+    explicit br_rga();
+    ~br_rga();
 
     bool init(MB_BLK ptr_blk);
     void set_settings(const settings settings);

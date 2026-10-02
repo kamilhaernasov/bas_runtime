@@ -14,11 +14,11 @@ extern "C"
     #include "rtsp_demo.h"
 };
 
-class mb_pool
+class br_mb_pool
 {
 public:
-    explicit mb_pool();
-    ~mb_pool();
+    explicit br_mb_pool();
+    ~br_mb_pool();
 
     bool init(const uint8_t countBlk, const uint32_t size);
     bool release();

@@ -14,7 +14,7 @@ extern "C"
     #include "rtsp_demo.h"
 };
 
-class vi
+class br_vi
 {
 public:
     struct settings
@@ -26,8 +26,8 @@ public:
         uint16_t _height;
     };
 
-    explicit vi();
-    ~vi();
+    explicit br_vi();
+    ~br_vi();
 
     void set_settings(const settings settings);
     bool init();
