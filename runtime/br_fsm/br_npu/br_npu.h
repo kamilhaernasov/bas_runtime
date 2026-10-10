@@ -34,4 +34,5 @@ private:
     settings _settings;
 
     rknn_context _ctx;
+    rknn_app_context_t _app_ctx;
 };

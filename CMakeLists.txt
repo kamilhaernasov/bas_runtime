@@ -56,7 +56,7 @@ add_executable(${PROJECT_NAME}
 
 # ---- Libs ----
 target_compile_definitions(${PROJECT_NAME} PRIVATE 
-    DRV1106_1103
+    RV1106_1103
 )
 target_link_directories(${PROJECT_NAME} PRIVATE
     "${SDK_PATH}/dependencies/lib/uclibc"
