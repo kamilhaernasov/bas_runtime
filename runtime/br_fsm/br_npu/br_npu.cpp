@@ -6,18 +6,6 @@
 #include <math.h>
 #include <set>
 
-// Дамп атрибутов тензоров, как в примере (чтобы видеть раскладку входов/выходов модели)
-static void dump_tensor_attr(rknn_tensor_attr* ptr_attr)
-{
-    printf("  index=%d, name=%s, n_dims=%d, dims=[%d, %d, %d, %d], n_elems=%d, size=%d, size_with_stride=%d, w_stride=%d, "
-           "fmt=%s, type=%s, qnt_type=%s, zp=%d, scale=%f\n",
-           ptr_attr->index, ptr_attr->name, ptr_attr->n_dims,
-           ptr_attr->dims[0], ptr_attr->dims[1], ptr_attr->dims[2], ptr_attr->dims[3],
-           ptr_attr->n_elems, ptr_attr->size, ptr_attr->size_with_stride, ptr_attr->w_stride,
-           get_format_string(ptr_attr->fmt), get_type_string(ptr_attr->type),
-           get_qnt_type_string(ptr_attr->qnt_type), ptr_attr->zp, ptr_attr->scale);
-}
-
 // Якоря yolov5 (три масштаба), как в примере
 static const int anchors[3][6] = {{10, 13, 16, 30, 33, 23},
                                   {30, 61, 62, 45, 59, 119},
@@ -248,7 +236,6 @@ bool br_npu::init()
             printf("%s: rknn_query input_attrs fail! Code: %d\n", __PRETTY_FUNCTION__, ret);
             return false;
         }
-        dump_tensor_attr(&(input_attrs[i]));
     }
 
     rknn_tensor_attr output_attrs[io_num.n_output];
@@ -263,7 +250,6 @@ bool br_npu::init()
             printf("%s: rknn_query output_attrs fail! Code: %d\n", __PRETTY_FUNCTION__, ret);
             return false;
         }
-        dump_tensor_attr(&(output_attrs[i]));
     }
 
     // По умолчанию тип входа int8 (нормализация и квантование считаются снаружи).

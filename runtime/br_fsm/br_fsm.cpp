@@ -214,13 +214,9 @@ bool br_fsm::process_frame_with_opencv(uint8_t* ptr_data)
     cv::Rect roi(left_padding, top_padding, input_width, input_height);
     input_scale.copyTo(letterbox_image(roi));
 
-    // RGA отдает RGB888, а модель ждет BGR (в примере кадр уходит в модель прямо из cv::cvtColor(...2BGR))
-    cv::Mat model_input;
-    cv::cvtColor(letterbox_image, model_input, cv::COLOR_RGB2BGR);
-
     // NPU
     object_detect_result_list od_results;
-    if (!_npu.inference(model_input.data, &od_results))
+    if (!_npu.inference(letterbox_image.data, &od_results))
     {
         return false;
     }
