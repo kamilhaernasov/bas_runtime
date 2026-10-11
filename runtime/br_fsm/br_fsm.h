@@ -35,7 +35,6 @@ extern "C"
 #include "br_mb_pool.h"
 #include "br_vi.h"
 #include "br_rga.h"
-#include "br_npu.h"
 #include "br_venc.h"
 #include "br_rtsp.h"
 
@@ -51,8 +50,6 @@ public:
         float _bytes_per_pixel_in = 1.5;
         uint8_t _id_camera = 0;
         std::string _path_to_iq_dir = "/etc/iqfiles";
-        std::string _path_to_model = "./model/yolov5.rknn";
-        std::string _path_to_labels = "./model/coco_80_labels_list.txt";
         PIXEL_FORMAT_E _pixel_format_in = RK_FMT_YUV420SP;
         _Rga_SURF_FORMAT _pixel_format_in_rga = RK_FORMAT_YCbCr_420_SP;
         _Rga_SURF_FORMAT _pixel_format_out_rga = RK_FORMAT_RGB_888;
@@ -68,9 +65,6 @@ public:
     bool start();
     bool release();
 private:
-    // Детекция на NPU + отрисовка рамок через opencv прямо в кадре после RGA
-    bool process_frame_with_opencv(uint8_t* ptr_data);
-
     settings _settings;
 
     bool inited = false;
@@ -78,7 +72,6 @@ private:
     br_mb_pool _mb_pool;
     br_vi _vi;
     br_rga _brga;
-    br_npu _npu;
     br_venc _venc;
     br_rtsp _rtsp;
 };
