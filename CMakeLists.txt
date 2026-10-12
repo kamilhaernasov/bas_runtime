@@ -20,7 +20,7 @@
 # Запуск сборки (из директории с CMakeLists.txt):
 # cmake -S . -B build && cmake --build build && cmake --install build
 
-cmake_minimum_required(VERSION 3.23)
+cmake_minimum_required(VERSION 3.21)
 
 set(PROJECT_NAME bas_runtime)
 set(CMAKE_INSTALL_PREFIX "${CMAKE_SOURCE_DIR}/install/" CACHE PATH "Install prefix")
