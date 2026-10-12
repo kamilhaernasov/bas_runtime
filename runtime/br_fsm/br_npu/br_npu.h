@@ -14,10 +14,10 @@
  * ├── rknn_set_io_mem - привязка памяти тензора (zero-copy: без промежуточных копий)
  * └── rknn_run        - прогон модели
  * 
- * Кадр с VI (YUV420SP) упаковывается под вход модели на RGA: кадр вписывается во вход
- * с сохранением пропорций, поля заливаются цветом, с которым обучалась модель.
- * Выходные тензоры квантованы, поэтому после прогона выполняется деквантование,
- * разбор боксов и NMS, а координаты пересчитываются в координаты кадра.
+ * Вход модели — тот же кадр, который RGA готовит для VENC (RGB888 нужного размера):
+ * модуль привязывает этот блок к входному тензору, поэтому ни копий, ни лишних
+ * конвертаций нет. Выходные тензоры квантованы, поэтому после прогона выполняется
+ * деквантование, разбор боксов и NMS. Координаты боксов — уже в пикселях кадра.
  * 
  */
 
@@ -29,14 +29,8 @@ extern "C"
 {
     #include "rk_comm_mb.h"
     #include "rk_mpi_mb.h"
-    #include "rk_comm_video.h"
     #include "rknn_api.h"
 };
-
-#include "im2d.h"
-#include "rga.h"
-#include "RgaUtils.h"
-#include "im2d_buffer.h"
 
 class br_npu
 {
@@ -46,10 +40,7 @@ public:
 
     struct settings
     {
-        uint16_t _width;
-        uint16_t _height;
         std::string _model_path;
-        _Rga_SURF_FORMAT _pixel_format_in_rga;
     };
 
     struct image_rect_t
@@ -77,11 +68,10 @@ public:
     explicit br_npu();
     ~br_npu();
 
-    bool init();
+    bool init(MB_BLK ptr_blk);
     bool release();
     void set_settings(const settings settings);
 
-    bool prepare_input(VIDEO_FRAME_INFO_S* ptr_frame);
     bool inference();
 
     object_detect_result_list* get_detections();
@@ -117,28 +107,13 @@ private:
 
     static void dump_tensor_attr(const rknn_tensor_attr* ptr_attr);
 
-    bool init_input_buffer(rknn_tensor_attr* ptr_input_attr);
     bool post_process();
-    bool map_detections_to_frame();
 
     settings _settings;
 
     rknn_context _ctx;
     rknn_app_context_t _app_ctx;
 
-    // Параметры вписывания кадра во вход модели
-    float _scale = 0;
-    uint16_t _content_w = 0;
-    uint16_t _content_h = 0;
-    uint16_t _pad_x = 0;
-    uint16_t _pad_y = 0;
-
-    // Буфер входа модели: пишет RGA, читает NPU
-    MB_POOL _mb_pool = MB_INVALID_POOLID;
-    MB_BLK _mb_blk = MB_INVALID_HANDLE;
-    rga_buffer_handle_t _handle_in = 0;
-    rga_buffer_t _buffer_in {};
-
-    // Результаты детекции в координатах кадра
+    // Результаты детекции последнего кадра
     object_detect_result_list _detections {};
 };

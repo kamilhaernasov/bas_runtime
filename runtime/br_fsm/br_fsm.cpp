@@ -19,7 +19,7 @@ br_fsm::~br_fsm()
 bool br_fsm::init()
 {
     // MB_POOL
-    if (!_mb_pool.init(_settings._mb_blk_count, _settings._width * _settings._height * _settings._bytes_per_pixel_out))
+    if (!_mb_pool.init(_settings._mb_blk_count, _settings._width_out * _settings._height_out * _settings._bytes_per_pixel_out))
     {
         return false;
     };
@@ -36,6 +36,8 @@ bool br_fsm::init()
     {
         ._width = _settings._width,
         ._height = _settings._height,
+        ._width_out = _settings._width_out,
+        ._height_out = _settings._height_out,
         ._pixel_format_out = _settings._pixel_format_out,
         ._pixel_format_in = _settings._pixel_format_in,
         ._pixel_format_in_rga = _settings._pixel_format_in_rga,
@@ -70,10 +72,10 @@ bool br_fsm::init()
     br_venc::settings venc_settings
     {
         ._codec = _settings._codec,
-        ._bitrate = _settings._width * _settings._height / 8 * 30,
+        ._bitrate = _settings._width_out * _settings._height_out / 8 * 30,
         ._gop = _settings._venc_gop,
-        ._width = _settings._width,
-        ._height = _settings._height,
+        ._width = _settings._width_out,
+        ._height = _settings._height_out,
         ._bytes_per_pixels = _settings._bytes_per_pixel_out,
         ._pixel_format = _settings._pixel_format_out,
     };
@@ -101,13 +103,11 @@ bool br_fsm::init()
     // NPU
     br_npu::settings npu_settings
     {
-        ._width = _settings._width,
-        ._height = _settings._height,
         ._model_path = _settings._path_to_model,
-        ._pixel_format_in_rga = _settings._pixel_format_in_rga,
     };
     _npu.set_settings(npu_settings);
-    if (!_npu.init())
+    // Вход модели — тот же блок, в который RGA пишет кадр для VENC
+    if (!_npu.init(_mb_pool.get_mb_blk(0)))
     {
         return false;
     };
@@ -138,17 +138,18 @@ bool br_fsm::start()
         {
             is_failed = true;
         }
-        // Упаковываем кадр под вход модели и прогоняем детекцию
-        if (!is_failed && !_npu.prepare_input(_vi.get_last_frame()))
-        {
-            is_failed = true;
-        }
-        if (!is_failed && !_npu.inference())
-        {
-            is_failed = true;
-        }
-        // Рисуем рамки детекции на кадре
-        if (!is_failed && !draw_detections(frame_after_brga))
+        // // Прогоняем детекцию на этом же кадре
+        // if (!is_failed && !_npu.inference())
+        // {
+        //     is_failed = true;
+        // }
+        // // Рисуем рамки детекции на кадре
+        // if (!is_failed && !draw_detections(frame_after_brga))
+        // {
+        //     is_failed = true;
+        // }
+        // Рисуем FPS потока
+        if (!is_failed && !draw_fps(frame_after_brga))
         {
             is_failed = true;
         }
@@ -186,12 +187,13 @@ bool br_fsm::start()
 
  bool br_fsm::release()
  {
-    _mb_pool.release();
+    // Сначала отпускаем всех, кто держит блок кадра, и только потом сам пул
+    _npu.release();
+    _rtsp.release();
+    _venc.release();
     _brga.release();
     _vi.release();
-    _venc.release();
-    _rtsp.release();
-    _npu.release();
+    _mb_pool.release();
     // Обязательно
     RK_MPI_SYS_Exit();
 
@@ -203,7 +205,7 @@ bool br_fsm::draw_detections(void* ptr_frame)
     br_npu::object_detect_result_list* ptr_detections = _npu.get_detections();
 
     // Кадр после RGA лежит в формате RGB888
-    cv::Mat frame(cv::Size(_settings._width, _settings._height), CV_8UC3, ptr_frame);
+    cv::Mat frame(cv::Size(_settings._width_out, _settings._height_out), CV_8UC3, ptr_frame);
 
     for (int i = 0; i < ptr_detections->count; i++)
     {
@@ -224,6 +226,41 @@ bool br_fsm::draw_detections(void* ptr_frame)
         cv::putText(frame, text, cv::Point(ptr_result->box.left, ptr_result->box.top - 8),
                     cv::FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(0, 255, 0), 2);
     }
+
+    return true;
+}
+
+uint64_t br_fsm::get_current_time_us() const
+{
+    static struct timespec time = {0, 0};
+    clock_gettime(CLOCK_MONOTONIC, &time);
+    return time.tv_sec * 1000000 + time.tv_nsec / 1000;
+}
+
+bool br_fsm::draw_fps(void* ptr_frame)
+{
+    // Считаем FPS по кадрам, которые прошли цикл, и обновляем значение раз в секунду
+    const uint64_t now_us = get_current_time_us();
+
+    if (_fps_start_time_us == 0)
+    {
+        _fps_start_time_us = now_us;
+    }
+    _fps_frames++;
+
+    const uint64_t period_us = now_us - _fps_start_time_us;
+    if (period_us >= FPS_PERIOD_US)
+    {
+        _fps = (float)_fps_frames * 1000000.0f / (float)period_us;
+        _fps_frames = 0;
+        _fps_start_time_us = now_us;
+    }
+
+    cv::Mat frame(cv::Size(_settings._width_out, _settings._height_out), CV_8UC3, ptr_frame);
+
+    char text[32];
+    sprintf(text, "FPS: %.1f", _fps);
+    cv::putText(frame, text, cv::Point(10, 30), cv::FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(0, 255, 0), 2);
 
     return true;
 }

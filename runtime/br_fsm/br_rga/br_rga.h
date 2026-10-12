@@ -28,6 +28,8 @@ public:
     {
         uint16_t _width;
         uint16_t _height;
+        uint16_t _width_out;
+        uint16_t _height_out;
         PIXEL_FORMAT_E _pixel_format_out;
         PIXEL_FORMAT_E _pixel_format_in;
         _Rga_SURF_FORMAT _pixel_format_in_rga;
@@ -52,6 +54,12 @@ private:
 
     uint32_t _size_for_venc;
     uint32_t _size_from_vi;
+
+    // Прямоугольник кадра с VI, который попадает в выход
+    uint16_t _crop_x = 0;
+    uint16_t _crop_y = 0;
+    uint16_t _crop_w = 0;
+    uint16_t _crop_h = 0;
 
     rga_buffer_handle_t _handle_buffer_venc = 0;
     rga_buffer_t _buffer_for_venc {};

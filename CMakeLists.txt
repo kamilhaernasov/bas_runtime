@@ -20,6 +20,7 @@
 # Запуск сборки (из директории с CMakeLists.txt):
 # cmake -S . -B build && cmake --build build && cmake --install build
 
+
 cmake_minimum_required(VERSION 3.21)
 
 set(PROJECT_NAME bas_runtime)

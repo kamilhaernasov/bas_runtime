@@ -17,8 +17,6 @@ namespace
     constexpr int PROP_BOX_SIZE = 5 + OBJ_CLASS_NUM;
     constexpr int ANCHOR_PER_BRANCH = 3;
     constexpr int ANCHOR_BRANCH_NUM = 3;
-    // Цвет полей кадра входа модели (114, 114, 114) — такой же, как при обучении модели
-    constexpr int PADDING_COLOR = 0x727272;
 
     const int anchor[ANCHOR_BRANCH_NUM][6] = {{10, 13, 16, 30, 33, 23},
                                               {30, 61, 62, 45, 59, 119},
@@ -308,7 +306,7 @@ void br_npu::dump_tensor_attr(const rknn_tensor_attr* ptr_attr)
            get_qnt_type_string(ptr_attr->qnt_type), ptr_attr->zp, ptr_attr->scale);
 }
 
-bool br_npu::init()
+bool br_npu::init(MB_BLK ptr_blk)
 {
     int ret = 0;
 
@@ -386,11 +384,39 @@ bool br_npu::init()
     // По умолчанию формат NHWC: NPU 1106 в zero-copy режиме поддерживает только его
     input_attrs[0].fmt = RKNN_TENSOR_NHWC;
 
-    // Выделяем буфер входа: в него пишет RGA, из него читает NPU
-    if (!init_input_buffer(&input_attrs[0]))
+    // Вход модели — тот же блок, в который RGA пишет кадр для VENC: копий нет
+    const uint64_t size_blk = RK_MPI_MB_GetSize(ptr_blk);
+    if (size_blk < input_attrs[0].size_with_stride)
     {
+        printf("%s: block too small! need=%u, have=%llu\n",
+               __PRETTY_FUNCTION__, input_attrs[0].size_with_stride, (unsigned long long)size_blk);
         return false;
     }
+
+    // Привязываем блок к входному тензору модели.
+    // rknn_create_mem_from_mb_blk в librknnmrt этой версии не экспортируется (есть только
+    // в заголовке), поэтому отдаем блок через его dma-buf дескриптор.
+    _app_ctx.input_mems[0] = rknn_create_mem_from_fd(
+        _ctx,
+        RK_MPI_MB_Handle2Fd(ptr_blk),
+        RK_MPI_MB_Handle2VirAddr(ptr_blk),
+        input_attrs[0].size_with_stride,
+        0
+    );
+    if (_app_ctx.input_mems[0] == nullptr)
+    {
+        printf("%s: rknn_create_mem_from_fd fail!\n", __PRETTY_FUNCTION__);
+        return false;
+    }
+
+    ret = rknn_set_io_mem(_ctx, _app_ctx.input_mems[0], &input_attrs[0]);
+    if (ret < 0)
+    {
+        printf("%s: input_mems rknn_set_io_mem fail! Code: %d\n", __PRETTY_FUNCTION__, ret);
+        return false;
+    }
+
+    printf("%s: input size_with_stride=%u\n", __PRETTY_FUNCTION__, input_attrs[0].size_with_stride);
 
     // Привязываем память выходных тензоров
     for (uint32_t i = 0; i < io_num.n_output; i++)
@@ -433,143 +459,17 @@ bool br_npu::init()
     return true;
 }
 
-bool br_npu::init_input_buffer(rknn_tensor_attr* ptr_input_attr)
-{
-    // Считаем параметры вписывания кадра во вход модели: масштаб с сохранением
-    // пропорций и поля по краям кадра входа
-    const float scale_x = (float)_app_ctx.model_width / (float)_settings._width;
-    const float scale_y = (float)_app_ctx.model_height / (float)_settings._height;
-    _scale = scale_x < scale_y ? scale_x : scale_y;
-    _content_w = (uint16_t)((float)_settings._width * _scale);
-    _content_h = (uint16_t)((float)_settings._height * _scale);
-    _pad_x = (uint16_t)((_app_ctx.model_width - _content_w) / 2);
-    _pad_y = (uint16_t)((_app_ctx.model_height - _content_h) / 2);
-    printf("%s: letterbox scale=%f, content=%dx%d, pad=(%u, %u)\n",
-           __PRETTY_FUNCTION__, _scale, _content_w, _content_h, _pad_x, _pad_y);
-
-    // Буфер входа выделяем сами: в него пишет RGA, из него читает NPU
-    MB_POOL_CONFIG_S mb_pool_cfg;
-    memset(&mb_pool_cfg, 0, sizeof(MB_POOL_CONFIG_S));
-    mb_pool_cfg.u64MBSize = ptr_input_attr->size_with_stride;
-    mb_pool_cfg.u32MBCnt = 1;
-    mb_pool_cfg.enAllocType = MB_ALLOC_TYPE_DMA;
-    mb_pool_cfg.bPreAlloc = RK_TRUE;
-    _mb_pool = RK_MPI_MB_CreatePool(&mb_pool_cfg);
-    if (_mb_pool == MB_INVALID_POOLID)
-    {
-        printf("%s: RK_MPI_MB_CreatePool fail!\n", __PRETTY_FUNCTION__);
-        return false;
-    }
-
-    _mb_blk = RK_MPI_MB_GetMB(_mb_pool, mb_pool_cfg.u64MBSize, RK_TRUE);
-    if (_mb_blk == MB_INVALID_HANDLE)
-    {
-        printf("%s: RK_MPI_MB_GetMB fail!\n", __PRETTY_FUNCTION__);
-        return false;
-    }
-
-    // Привязываем блок памяти к входному тензору модели.
-    // rknn_create_mem_from_mb_blk в librknnmrt этой версии не экспортируется (есть только
-    // в заголовке), поэтому отдаем тот же блок через его dma-buf дескриптор.
-    _app_ctx.input_mems[0] = rknn_create_mem_from_fd(
-        _ctx,
-        RK_MPI_MB_Handle2Fd(_mb_blk),
-        RK_MPI_MB_Handle2VirAddr(_mb_blk),
-        ptr_input_attr->size_with_stride,
-        0
-    );
-    if (_app_ctx.input_mems[0] == nullptr)
-    {
-        printf("%s: rknn_create_mem_from_fd fail!\n", __PRETTY_FUNCTION__);
-        return false;
-    }
-
-    int ret = rknn_set_io_mem(_ctx, _app_ctx.input_mems[0], ptr_input_attr);
-    if (ret < 0)
-    {
-        printf("%s: input_mems rknn_set_io_mem fail! Code: %d\n", __PRETTY_FUNCTION__, ret);
-        return false;
-    }
-
-    // Прокидываем блок памяти в RGA и получаем буфер под кадр входа модели
-    _handle_in = importbuffer_fd(RK_MPI_MB_Handle2Fd(_mb_blk), mb_pool_cfg.u64MBSize);
-    if (_handle_in == 0)
-    {
-        printf("%s: importbuffer_fd fail!\n", __PRETTY_FUNCTION__);
-        return false;
-    }
-
-    _buffer_in = wrapbuffer_handle(_handle_in, _app_ctx.model_width, _app_ctx.model_height, RK_FORMAT_RGB_888);
-    _buffer_in.wstride = (ptr_input_attr->w_stride > 0) ? (int)ptr_input_attr->w_stride : _app_ctx.model_width;
-
-    printf("%s: input w_stride=%u, size_with_stride=%u\n",
-           __PRETTY_FUNCTION__, ptr_input_attr->w_stride, ptr_input_attr->size_with_stride);
-
-    return true;
-}
-
-bool br_npu::prepare_input(VIDEO_FRAME_INFO_S* ptr_frame)
+bool br_npu::inference()
 {
     int ret = 0;
 
-    // Прокидываем блок памяти кадра с VI в RGA
-    rga_buffer_handle_t handle_from_vi = importbuffer_fd(
-        RK_MPI_MB_Handle2Fd(ptr_frame->stVFrame.pMbBlk),
-        _settings._width * _settings._height * 3 / 2
-    );
-    if (handle_from_vi == 0)
-    {
-        printf("%s: importbuffer_fd fail!\n", __PRETTY_FUNCTION__);
-        return false;
-    }
-
-    rga_buffer_t buffer_from_vi = wrapbuffer_handle(
-        handle_from_vi,
-        _settings._width,
-        _settings._height,
-        _settings._pixel_format_in_rga
-    );
-
-    // Заливаем кадр входа цветом полей, чтобы поля не собирались из прошлых кадров
-    im_rect rect_input { 0, 0, _app_ctx.model_width, _app_ctx.model_height };
-    ret = imfill(_buffer_in, rect_input, PADDING_COLOR);
-    if (ret != IM_STATUS_SUCCESS)
-    {
-        printf("%s: imfill fail! Desc: %s\n", __PRETTY_FUNCTION__, imStrError((IM_STATUS)ret));
-        return false;
-    }
-
-    // Масштабируем кадр под вход модели, конвертируем цвет и кладем его по центру
-    im_rect rect_from_vi { 0, 0, _settings._width, _settings._height };
-    im_rect rect_content { _pad_x, _pad_y, _content_w, _content_h };
-    ret = improcess(buffer_from_vi, _buffer_in, {}, rect_from_vi, rect_content, {}, -1, nullptr, nullptr, IM_SYNC);
-    if (ret != IM_STATUS_SUCCESS)
-    {
-        printf("%s: improcess fail! Desc: %s\n", __PRETTY_FUNCTION__, imStrError((IM_STATUS)ret));
-        return false;
-    }
-
-    ret = releasebuffer_handle(handle_from_vi);
-    if (ret != IM_STATUS_SUCCESS)
-    {
-        printf("%s: releasebuffer_handle fail! Desc: %s, ret: %d\n", __PRETTY_FUNCTION__, imStrError((IM_STATUS)ret), ret);
-        return false;
-    }
-
-    // Отдаем кадр входа устройству
+    // Кадр в блок пишет RGA, а читает NPU: синхронизируем кэш перед прогоном
     ret = rknn_mem_sync(_ctx, _app_ctx.input_mems[0], RKNN_MEMORY_SYNC_TO_DEVICE);
     if (ret < 0)
     {
         printf("%s: rknn_mem_sync fail! Code: %d\n", __PRETTY_FUNCTION__, ret);
         return false;
     }
-
-    return true;
-}
-
-bool br_npu::inference()
-{
-    int ret = 0;
 
     ret = rknn_run(_ctx, nullptr);
     if (ret < 0)
@@ -579,11 +479,6 @@ bool br_npu::inference()
     }
 
     if (!post_process())
-    {
-        return false;
-    }
-
-    if (!map_detections_to_frame())
     {
         return false;
     }
@@ -671,22 +566,6 @@ bool br_npu::post_process()
     return true;
 }
 
-bool br_npu::map_detections_to_frame()
-{
-    for (int i = 0; i < _detections.count; i++)
-    {
-        object_detect_result* ptr_result = &(_detections.results[i]);
-
-        // Переводим боксы из пространства входа модели в координаты кадра
-        ptr_result->box.left   = clamp_value(((float)ptr_result->box.left   - _pad_x) / _scale, 0, _settings._width - 1);
-        ptr_result->box.top    = clamp_value(((float)ptr_result->box.top    - _pad_y) / _scale, 0, _settings._height - 1);
-        ptr_result->box.right  = clamp_value(((float)ptr_result->box.right  - _pad_x) / _scale, 0, _settings._width - 1);
-        ptr_result->box.bottom = clamp_value(((float)ptr_result->box.bottom - _pad_y) / _scale, 0, _settings._height - 1);
-    }
-
-    return true;
-}
-
 br_npu::object_detect_result_list* br_npu::get_detections()
 {
     return &_detections;
@@ -706,20 +585,7 @@ const char* br_npu::get_class_name(const int cls_id)
 
 bool br_npu::release()
 {
-    int ret = 0;
-
-    // Освобождаем буфер входа
-    if (_handle_in != 0)
-    {
-        ret = releasebuffer_handle(_handle_in);
-        if (ret != IM_STATUS_SUCCESS)
-        {
-            printf("%s: releasebuffer_handle fail! Desc: %s\n", __PRETTY_FUNCTION__, imStrError((IM_STATUS)ret));
-            return false;
-        }
-        _handle_in = 0;
-    }
-
+    // Отвязываем входной тензор от блока кадра (сам блок принадлежит br_fsm)
     if (_app_ctx.input_mems[0] != nullptr)
     {
         rknn_destroy_mem(_ctx, _app_ctx.input_mems[0]);
@@ -751,18 +617,6 @@ bool br_npu::release()
     {
         rknn_destroy(_ctx);
         _ctx = 0;
-    }
-
-    if (_mb_blk != MB_INVALID_HANDLE)
-    {
-        RK_MPI_MB_ReleaseMB(_mb_blk);
-        _mb_blk = MB_INVALID_HANDLE;
-    }
-
-    if (_mb_pool != MB_INVALID_POOLID)
-    {
-        RK_MPI_MB_DestroyPool(_mb_pool);
-        _mb_pool = MB_INVALID_POOLID;
     }
 
     deinit_post_process();

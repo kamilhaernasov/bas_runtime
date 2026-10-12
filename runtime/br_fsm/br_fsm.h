@@ -46,6 +46,8 @@ public:
     {
         uint16_t _width = 1920;
         uint16_t _height = 1080;
+        uint16_t _width_out = 640;
+        uint16_t _height_out = 640;
         uint8_t _mb_blk_count = 1;
         float _bytes_per_pixel_out = 3;
         float _bytes_per_pixel_in = 1.5;
@@ -67,11 +69,20 @@ public:
     bool start();
     bool release();
 private:
+    static constexpr uint64_t FPS_PERIOD_US = 1000000;
+
     settings _settings;
 
     bool inited = false;
 
     bool draw_detections(void* ptr_frame);
+    bool draw_fps(void* ptr_frame);
+    uint64_t get_current_time_us() const;
+
+    // Счетчики для расчета FPS потока
+    uint32_t _fps_frames = 0;
+    uint64_t _fps_start_time_us = 0;
+    float _fps = 0;
 
     br_mb_pool _mb_pool;
     br_vi _vi;

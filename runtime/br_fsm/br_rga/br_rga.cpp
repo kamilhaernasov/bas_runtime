@@ -14,9 +14,21 @@ br_rga::~br_rga()
 bool br_rga::init(MB_BLK ptr_blk)
 {
     // Считаем размеры уходящего буфера в venc
-    _size_for_venc = _settings._width * _settings._height * _settings._pixels_per_byte_out;
+    _size_for_venc = _settings._width_out * _settings._height_out * _settings._pixels_per_byte_out;
     // Считаем размеры приходящего буфера с vi
     _size_from_vi = _settings._width * _settings._height * _settings._pixels_per_byte_in;
+
+    // Кадр обрезаем по центру под пропорции выхода, чтобы выход заполнился целиком и без искажений
+    const float scale_x = (float)_settings._width_out / (float)_settings._width;
+    const float scale_y = (float)_settings._height_out / (float)_settings._height;
+    const float scale = scale_x > scale_y ? scale_x : scale_y;
+    _crop_w = (uint16_t)((float)_settings._width_out / scale + 0.5f);
+    _crop_h = (uint16_t)((float)_settings._height_out / scale + 0.5f);
+    _crop_x = (_settings._width - _crop_w) / 2;
+    _crop_y = (_settings._height - _crop_h) / 2;
+    printf("%s: crop (%u, %u) %ux%u -> %ux%u\n",
+           __PRETTY_FUNCTION__, _crop_x, _crop_y, _crop_w, _crop_h, _settings._width_out, _settings._height_out);
+
     // Прокидываем блок памяти фрейма в RGA и получаем указатель на буфер
     _handle_buffer_venc = importbuffer_fd(RK_MPI_MB_Handle2Fd(ptr_blk), _size_for_venc);
     if (_handle_buffer_venc == 0)
@@ -27,9 +39,9 @@ bool br_rga::init(MB_BLK ptr_blk)
 
     memset(&_buffer_for_venc, 0, sizeof(_buffer_for_venc));
     // Упаковываем буфер из RGA и получаем сам буфер
-    _buffer_for_venc = wrapbuffer_handle(_handle_buffer_venc, _settings._width, _settings._height, _settings._pixel_format_out_rga);
-    _buffer_for_venc.wstride = _settings._width;
-    _buffer_for_venc.height = _settings._height;
+    _buffer_for_venc = wrapbuffer_handle(_handle_buffer_venc, _settings._width_out, _settings._height_out, _settings._pixel_format_out_rga);
+    _buffer_for_venc.wstride = _settings._width_out;
+    _buffer_for_venc.height = _settings._height_out;
 
     return true;
 }
@@ -79,17 +91,13 @@ bool br_rga::process_frame(VIDEO_FRAME_INFO_S* ptr_frame)
         return false;
     } 
 
-    // Конвертируем
-    ret = imcvtcolor(
-        buffer_from_vi, 
-        _buffer_for_venc, 
-        _settings._pixel_format_in_rga,
-        _settings._pixel_format_out_rga, 
-        1
-    );
+    // Обрезаем кадр по центру, масштабируем под выход и конвертируем цвет одним проходом RGA
+    im_rect rect_from_vi { _crop_x, _crop_y, _crop_w, _crop_h };
+    im_rect rect_to_venc { 0, 0, _settings._width_out, _settings._height_out };
+    ret = improcess(buffer_from_vi, _buffer_for_venc, {}, rect_from_vi, rect_to_venc, {}, -1, nullptr, nullptr, IM_SYNC);
     if (ret != IM_STATUS_SUCCESS) 
     {
-        printf("%s: imcvtcolor fail! Desc: %s\n", __PRETTY_FUNCTION__, imStrError((IM_STATUS)ret));
+        printf("%s: improcess fail! Desc: %s\n", __PRETTY_FUNCTION__, imStrError((IM_STATUS)ret));
         ret = releasebuffer_handle(handle_buffer_vi);
         if (ret != IM_STATUS_NOERROR)
         {
