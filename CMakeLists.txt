@@ -80,8 +80,9 @@ find_package(Threads REQUIRED)
 
 # ---- Options ----
 # Compiler
+# -O2 обязателен: без него разбор выходов NPU (декод боксов и NMS) считается без оптимизации
 target_compile_options(${PROJECT_NAME} PRIVATE
-    -g -Wall -DISP_HW_V30 -DRKPLATFORM=ON -DARCH64=OFF
+    -O2 -g -Wall -DISP_HW_V30 -DRKPLATFORM=ON -DARCH64=OFF
     -DROCKIVA -DUAPI2
     -D_LARGEFILE_SOURCE -D_LARGEFILE64_SOURCE -D_FILE_OFFSET_BITS=64
 )

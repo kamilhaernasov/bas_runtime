@@ -14,23 +14,30 @@
  * ├── rknn_set_io_mem - привязка памяти тензора (zero-copy: без промежуточных копий)
  * └── rknn_run        - прогон модели
  * 
- * Вход модели — тот же кадр, который RGA готовит для VENC (RGB888 нужного размера):
- * модуль привязывает этот блок к входному тензору, поэтому ни копий, ни лишних
- * конвертаций нет. Выходные тензоры квантованы, поэтому после прогона выполняется
- * деквантование, разбор боксов и NMS. Координаты боксов — уже в пикселях кадра.
+ * Кадр с VI (YUV420SP) упаковывается под вход модели на RGA: кадр вписывается во вход
+ * с сохранением пропорций, поля заливаются цветом, с которым обучалась модель. Буфер под
+ * вход модели и сам проход RGA — в br_rga, модуль его только просит о подготовке кадра.
+ * Прогон модели и разбор ее выходов идут в отдельном потоке, поэтому цикл обработки кадров
+ * не ждет NPU: если вход занят прогоном, кадр для детекции просто пропускается.
  * 
  */
 
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
+#include <mutex>
 #include <string>
+#include <thread>
 
 extern "C"
 {
     #include "rk_comm_mb.h"
     #include "rk_mpi_mb.h"
+    #include "rk_comm_video.h"
     #include "rknn_api.h"
 };
+
+#include "br_rga.h"
 
 class br_npu
 {
@@ -40,6 +47,8 @@ public:
 
     struct settings
     {
+        uint16_t _width;
+        uint16_t _height;
         std::string _model_path;
     };
 
@@ -68,17 +77,29 @@ public:
     explicit br_npu();
     ~br_npu();
 
-    bool init(MB_BLK ptr_blk);
+    // ptr_blk — блок под вход модели, ptr_rga — модуль RGA, который в него пишет кадр
+    bool init(MB_BLK ptr_blk, br_rga* ptr_rga);
     bool release();
     void set_settings(const settings settings);
 
-    bool inference();
+    // Заполняет вход модели кадром. Не блокирует: если NPU занят прогоном предыдущего
+    // кадра, вызов сразу возвращается, а кадр пропускается
+    bool prepare_input(VIDEO_FRAME_INFO_S* ptr_frame);
 
-    object_detect_result_list* get_detections();
+    object_detect_result_list get_detections();
+    uint32_t get_inference_count();
     static const char* get_class_name(const int cls_id);
 private:
     static constexpr float BOX_THRESH = 0.25f;
     static constexpr float NMS_THRESH = 0.45f;
+
+    // Состояние буфера входа модели
+    enum class input_state
+    {
+        free,   // свободен, цикл может заполнять
+        ready,  // заполнен, ждет прогона
+        busy    // идет прогон и разбор
+    };
 
     // Буфер DMA, которым NPU обменивается с внешней памятью
     struct rknn_dma_buf
@@ -107,13 +128,30 @@ private:
 
     static void dump_tensor_attr(const rknn_tensor_attr* ptr_attr);
 
-    bool post_process();
+    bool run();
+    bool process_outputs();
+    bool post_process(object_detect_result_list& detections);
+    bool map_detections_to_frame(object_detect_result_list& detections);
+
+    void worker();
 
     settings _settings;
 
     rknn_context _ctx;
     rknn_app_context_t _app_ctx;
 
-    // Результаты детекции последнего кадра
+    // RGA-модуль, который готовит кадр под вход модели (принадлежит br_fsm)
+    br_rga* _ptr_rga = nullptr;
+
+    // Поток прогона модели и его связь с циклом
+    std::thread _worker;
+    std::mutex _mtx;
+    std::condition_variable _cv;
+    input_state _input_state = input_state::free;
+    bool _stop = false;
+
+    // Результаты детекции в координатах кадра и их защита
+    std::mutex _mtx_detections;
     object_detect_result_list _detections {};
+    uint32_t _inference_count = 0;
 };

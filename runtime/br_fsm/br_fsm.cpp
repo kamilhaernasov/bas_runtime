@@ -19,7 +19,7 @@ br_fsm::~br_fsm()
 bool br_fsm::init()
 {
     // MB_POOL
-    if (!_mb_pool.init(_settings._mb_blk_count, _settings._width_out * _settings._height_out * _settings._bytes_per_pixel_out))
+    if (!_mb_pool.init(_settings._mb_blk_count, _settings._width * _settings._height * _settings._bytes_per_pixel_out))
     {
         return false;
     };
@@ -31,13 +31,26 @@ bool br_fsm::init()
     };
     printf("%s: _mb_pool.create_mb_blk: ok\n", __PRETTY_FUNCTION__);
 
-    // RGA
+    // MB_POOL под вход модели: размер блока другой, поэтому отдельный пул
+    if (!_mb_pool_npu.init(_settings._mb_blk_count, _settings._width_model * _settings._height_model * _settings._bytes_per_pixel_out))
+    {
+        return false;
+    };
+    printf("%s: _mb_pool_npu.init: ok\n", __PRETTY_FUNCTION__);
+
+    if (_mb_pool_npu.create_mb_blk(RK_TRUE) == MB_INVALID_HANDLE)
+    {
+        return false;
+    };
+    printf("%s: _mb_pool_npu.create_mb_blk: ok\n", __PRETTY_FUNCTION__);
+
+    // RGA: кадр для VENC и кадр под вход модели
     br_rga::settings settings
     {
         ._width = _settings._width,
         ._height = _settings._height,
-        ._width_out = _settings._width_out,
-        ._height_out = _settings._height_out,
+        ._width_model = _settings._width_model,
+        ._height_model = _settings._height_model,
         ._pixel_format_out = _settings._pixel_format_out,
         ._pixel_format_in = _settings._pixel_format_in,
         ._pixel_format_in_rga = _settings._pixel_format_in_rga,
@@ -46,7 +59,7 @@ bool br_fsm::init()
         ._pixels_per_byte_in = _settings._bytes_per_pixel_in,
     };
     _brga.set_settings(settings);
-    if (!_brga.init(_mb_pool.get_mb_blk(0)))
+    if (!_brga.init(_mb_pool.get_mb_blk(0), _mb_pool_npu.get_mb_blk(0)))
     {
         return false;
     };
@@ -72,10 +85,10 @@ bool br_fsm::init()
     br_venc::settings venc_settings
     {
         ._codec = _settings._codec,
-        ._bitrate = _settings._width_out * _settings._height_out / 8 * 30,
+        ._bitrate = _settings._width * _settings._height / 8 * 30,
         ._gop = _settings._venc_gop,
-        ._width = _settings._width_out,
-        ._height = _settings._height_out,
+        ._width = _settings._width,
+        ._height = _settings._height,
         ._bytes_per_pixels = _settings._bytes_per_pixel_out,
         ._pixel_format = _settings._pixel_format_out,
     };
@@ -103,11 +116,13 @@ bool br_fsm::init()
     // NPU
     br_npu::settings npu_settings
     {
+        ._width = _settings._width,
+        ._height = _settings._height,
         ._model_path = _settings._path_to_model,
     };
     _npu.set_settings(npu_settings);
-    // Вход модели — тот же блок, в который RGA пишет кадр для VENC
-    if (!_npu.init(_mb_pool.get_mb_blk(0)))
+    // Блок под вход модели и RGA-модуль, который в него пишет кадр
+    if (!_npu.init(_mb_pool_npu.get_mb_blk(0), &_brga))
     {
         return false;
     };
@@ -127,37 +142,37 @@ bool br_fsm::start()
         {
             is_failed = true;
         }
+        _stage_us.vi += take_stage_time();
         // Обработка в RGA
         if (!is_failed && !_brga.process_frame(_vi.get_last_frame()))
         {
             is_failed = true;
         };
+        _stage_us.rga += take_stage_time();
         // Получаем указатель на фрейм после rga
         void* frame_after_brga = _mb_pool.get_ptr_from_mb_blk(_mb_pool.get_mb_blk(0));
         if (!is_failed && frame_after_brga == nullptr)
         {
             is_failed = true;
         }
-        // // Прогоняем детекцию на этом же кадре
-        // if (!is_failed && !_npu.inference())
-        // {
-        //     is_failed = true;
-        // }
-        // // Рисуем рамки детекции на кадре
-        // if (!is_failed && !draw_detections(frame_after_brga))
-        // {
-        //     is_failed = true;
-        // }
-        // Рисуем FPS потока
-        if (!is_failed && !draw_fps(frame_after_brga))
+        // Отдаем кадр в поток детекции: если NPU занят предыдущим кадром, этот пропускается
+        if (!is_failed && !_npu.prepare_input(_vi.get_last_frame()))
         {
             is_failed = true;
         }
+        _stage_us.npu += take_stage_time();
+        // Рисуем рамки по последнему готовому результату детекции
+        if (!is_failed && !draw_detections(frame_after_brga))
+        {
+            is_failed = true;
+        }
+        _stage_us.draw += take_stage_time();
         // Сбрасываем кэш, иначе мерцает open-cv
         if (!is_failed && !_mb_pool.mmz_flush_cache(0))
         {
             is_failed = true;
         }
+        _stage_us.flush += take_stage_time();
         // Отправляем rga frame в venc (кадр уже в mb блоке, с которым работал rga)
         if (!is_failed && !_venc.prepare_frame())
         {
@@ -168,6 +183,7 @@ bool br_fsm::start()
         {
             is_failed = true;
         }
+        _stage_us.venc += take_stage_time();
         // Отправляем в rtsp
         if (!is_failed && !_rtsp.process_frame(
             reinterpret_cast<uint8_t*>(_mb_pool.get_ptr_from_mb_blk(_venc.get_codec_frame()->pstPack->pMbBlk)), 
@@ -177,9 +193,14 @@ bool br_fsm::start()
         {
             is_failed = true;
         }
+        _stage_us.rtsp += take_stage_time();
         // Очищаем 
         _vi.release_frame();
         _venc.release_codec_frame();
+        // Конец кадра: хвост цикла ни в одну стадию не относим
+        take_stage_time();
+        // Раз в секунду печатаем FPS и средние времена стадий
+        print_fps();
     }
 
     return true;
@@ -187,12 +208,13 @@ bool br_fsm::start()
 
  bool br_fsm::release()
  {
-    // Сначала отпускаем всех, кто держит блок кадра, и только потом сам пул
+    // Сначала отпускаем всех, кто держит блоки кадра, и только потом сами пулы
     _npu.release();
     _rtsp.release();
     _venc.release();
     _brga.release();
     _vi.release();
+    _mb_pool_npu.release();
     _mb_pool.release();
     // Обязательно
     RK_MPI_SYS_Exit();
@@ -202,14 +224,14 @@ bool br_fsm::start()
 
 bool br_fsm::draw_detections(void* ptr_frame)
 {
-    br_npu::object_detect_result_list* ptr_detections = _npu.get_detections();
+    br_npu::object_detect_result_list detections = _npu.get_detections();
 
     // Кадр после RGA лежит в формате RGB888
-    cv::Mat frame(cv::Size(_settings._width_out, _settings._height_out), CV_8UC3, ptr_frame);
+    cv::Mat frame(cv::Size(_settings._width, _settings._height), CV_8UC3, ptr_frame);
 
-    for (int i = 0; i < ptr_detections->count; i++)
+    for (int i = 0; i < detections.count; i++)
     {
-        br_npu::object_detect_result* ptr_result = &(ptr_detections->results[i]);
+        br_npu::object_detect_result* ptr_result = &(detections.results[i]);
 
         printf("%s @ (%d %d %d %d) %.3f\n",
                br_npu::get_class_name(ptr_result->cls_id),
@@ -237,30 +259,52 @@ uint64_t br_fsm::get_current_time_us() const
     return time.tv_sec * 1000000 + time.tv_nsec / 1000;
 }
 
-bool br_fsm::draw_fps(void* ptr_frame)
+uint64_t br_fsm::take_stage_time()
 {
-    // Считаем FPS по кадрам, которые прошли цикл, и обновляем значение раз в секунду
+    const uint64_t now_us = get_current_time_us();
+    const uint64_t delta_us = now_us - _stage_time_us;
+    _stage_time_us = now_us;
+    return delta_us;
+}
+
+void br_fsm::print_fps()
+{
     const uint64_t now_us = get_current_time_us();
 
     if (_fps_start_time_us == 0)
     {
         _fps_start_time_us = now_us;
+        return;
     }
+
     _fps_frames++;
 
     const uint64_t period_us = now_us - _fps_start_time_us;
-    if (period_us >= FPS_PERIOD_US)
+    if (period_us < FPS_PERIOD_US)
     {
-        _fps = (float)_fps_frames * 1000000.0f / (float)period_us;
-        _fps_frames = 0;
-        _fps_start_time_us = now_us;
+        return;
     }
 
-    cv::Mat frame(cv::Size(_settings._width_out, _settings._height_out), CV_8UC3, ptr_frame);
+    // Средние значения за окно: точнее, чем 1/Δt по одному кадру
+    const double frames = (double)_fps_frames;
+    const double frame_us = (double)period_us / frames;
+    const uint32_t inference_count = _npu.get_inference_count();
+    const double det_per_sec = (double)(inference_count - _inference_count_prev) * 1000000.0 / (double)period_us;
+    _inference_count_prev = inference_count;
 
-    char text[32];
-    sprintf(text, "FPS: %.1f", _fps);
-    cv::putText(frame, text, cv::Point(10, 30), cv::FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(0, 255, 0), 2);
+    printf("[fps] %.2f | frame %.1f ms | vi %.1f | rga %.1f | npu %.1f | draw %.1f | flush %.1f | venc %.1f | rtsp %.1f ms | det %.1f/s\n",
+           frames * 1000000.0 / (double)period_us,
+           frame_us / 1000.0,
+           (double)_stage_us.vi / frames / 1000.0,
+           (double)_stage_us.rga / frames / 1000.0,
+           (double)_stage_us.npu / frames / 1000.0,
+           (double)_stage_us.draw / frames / 1000.0,
+           (double)_stage_us.flush / frames / 1000.0,
+           (double)_stage_us.venc / frames / 1000.0,
+           (double)_stage_us.rtsp / frames / 1000.0,
+           det_per_sec);
 
-    return true;
+    _stage_us = stage_stats();
+    _fps_frames = 0;
+    _fps_start_time_us = now_us;
 }

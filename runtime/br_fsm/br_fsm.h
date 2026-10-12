@@ -46,8 +46,9 @@ public:
     {
         uint16_t _width = 1920;
         uint16_t _height = 1080;
-        uint16_t _width_out = 640;
-        uint16_t _height_out = 640;
+        // Размер входа модели: под него выделяется отдельный блок для NPU
+        uint16_t _width_model = 640;
+        uint16_t _height_model = 640;
         uint8_t _mb_blk_count = 1;
         float _bytes_per_pixel_out = 3;
         float _bytes_per_pixel_in = 1.5;
@@ -59,7 +60,7 @@ public:
         _Rga_SURF_FORMAT _pixel_format_out_rga = RK_FORMAT_RGB_888;
         PIXEL_FORMAT_E _pixel_format_out = RK_FMT_RGB888;
         br_venc::codec _codec = br_venc::codec::H264;
-        uint8_t _venc_gop = 1;
+        uint8_t _venc_gop = 30;
     };
 
     explicit br_fsm();
@@ -71,20 +72,35 @@ public:
 private:
     static constexpr uint64_t FPS_PERIOD_US = 1000000;
 
+    // Тайминги стадий кадра, накопленные за окно измерения
+    struct stage_stats
+    {
+        uint64_t vi = 0;
+        uint64_t rga = 0;
+        uint64_t npu = 0;
+        uint64_t draw = 0;
+        uint64_t flush = 0;
+        uint64_t venc = 0;
+        uint64_t rtsp = 0;
+    };
+
     settings _settings;
 
     bool inited = false;
 
     bool draw_detections(void* ptr_frame);
-    bool draw_fps(void* ptr_frame);
+    void print_fps();
     uint64_t get_current_time_us() const;
+    uint64_t take_stage_time();
 
-    // Счетчики для расчета FPS потока
     uint32_t _fps_frames = 0;
     uint64_t _fps_start_time_us = 0;
-    float _fps = 0;
+    uint64_t _stage_time_us = 0;
+    uint32_t _inference_count_prev = 0;
+    stage_stats _stage_us;
 
     br_mb_pool _mb_pool;
+    br_mb_pool _mb_pool_npu;
     br_vi _vi;
     br_rga _brga;
     br_venc _venc;

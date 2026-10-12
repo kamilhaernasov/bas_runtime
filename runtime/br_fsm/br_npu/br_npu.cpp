@@ -17,6 +17,8 @@ namespace
     constexpr int PROP_BOX_SIZE = 5 + OBJ_CLASS_NUM;
     constexpr int ANCHOR_PER_BRANCH = 3;
     constexpr int ANCHOR_BRANCH_NUM = 3;
+    // Цвет полей кадра входа модели (114, 114, 114) — такой же, как при обучении модели
+    constexpr int PADDING_COLOR = 0x727272;
 
     const int anchor[ANCHOR_BRANCH_NUM][6] = {{10, 13, 16, 30, 33, 23},
                                               {30, 61, 62, 45, 59, 119},
@@ -306,9 +308,16 @@ void br_npu::dump_tensor_attr(const rknn_tensor_attr* ptr_attr)
            get_qnt_type_string(ptr_attr->qnt_type), ptr_attr->zp, ptr_attr->scale);
 }
 
-bool br_npu::init(MB_BLK ptr_blk)
+bool br_npu::init(MB_BLK ptr_blk, br_rga* ptr_rga)
 {
     int ret = 0;
+
+    if (ptr_rga == nullptr)
+    {
+        printf("%s: ptr_rga is null!\n", __PRETTY_FUNCTION__);
+        return false;
+    }
+    _ptr_rga = ptr_rga;
 
     // Создаем контекст NPU и загружаем модель
     ret = rknn_init(&_ctx, (void*)_settings._model_path.c_str(), 0, 0, nullptr);
@@ -384,7 +393,7 @@ bool br_npu::init(MB_BLK ptr_blk)
     // По умолчанию формат NHWC: NPU 1106 в zero-copy режиме поддерживает только его
     input_attrs[0].fmt = RKNN_TENSOR_NHWC;
 
-    // Вход модели — тот же блок, в который RGA пишет кадр для VENC: копий нет
+    // Буфер под вход модели выделен пулом br_mb_pool: проверяем, что его хватает под тензор
     const uint64_t size_blk = RK_MPI_MB_GetSize(ptr_blk);
     if (size_blk < input_attrs[0].size_with_stride)
     {
@@ -454,16 +463,49 @@ bool br_npu::init(MB_BLK ptr_blk)
         return false;
     }
 
+    // Прогон модели и разбор ее выходов уходят в отдельный поток
+    _worker = std::thread(&br_npu::worker, this);
+
     printf("%s: ok\n", __PRETTY_FUNCTION__);
 
     return true;
 }
 
-bool br_npu::inference()
+bool br_npu::prepare_input(VIDEO_FRAME_INFO_S* ptr_frame)
+{
+    {
+        std::lock_guard<std::mutex> lock(_mtx);
+        if (_input_state != input_state::free)
+        {
+            // NPU занят прогоном предыдущего кадра: этот кадр для детекции пропускаем
+            return true;
+        }
+        // Занимаем вход: прогон не должен стартовать на недозаполненном кадре
+        _input_state = input_state::busy;
+    }
+
+    if (!_ptr_rga->process_frame_model(ptr_frame))
+    {
+        // Вход остался незаполненным: освобождаем, иначе поток будет ждать его вечно
+        std::lock_guard<std::mutex> lock(_mtx);
+        _input_state = input_state::free;
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(_mtx);
+        _input_state = input_state::ready;
+    }
+    _cv.notify_one();
+
+    return true;
+}
+
+bool br_npu::run()
 {
     int ret = 0;
 
-    // Кадр в блок пишет RGA, а читает NPU: синхронизируем кэш перед прогоном
+    // Кадр в буфер пишет RGA, а читает NPU: синхронизируем кэш перед прогоном
     ret = rknn_mem_sync(_ctx, _app_ctx.input_mems[0], RKNN_MEMORY_SYNC_TO_DEVICE);
     if (ret < 0)
     {
@@ -478,22 +520,67 @@ bool br_npu::inference()
         return false;
     }
 
-    if (!post_process())
+    return true;
+}
+
+bool br_npu::process_outputs()
+{
+    object_detect_result_list detections;
+
+    if (!post_process(detections))
     {
         return false;
+    }
+
+    if (!map_detections_to_frame(detections))
+    {
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(_mtx_detections);
+        _detections = detections;
+        _inference_count++;
     }
 
     return true;
 }
 
-bool br_npu::post_process()
+void br_npu::worker()
+{
+    while (true)
+    {
+        {
+            std::unique_lock<std::mutex> lock(_mtx);
+            _cv.wait(lock, [this] { return _stop || _input_state == input_state::ready; });
+            if (_stop)
+            {
+                return;
+            }
+            _input_state = input_state::busy;
+        }
+
+        if (!run() || !process_outputs())
+        {
+            printf("%s: frame skipped\n", __PRETTY_FUNCTION__);
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(_mtx);
+            _input_state = input_state::free;
+        }
+        _cv.notify_all();
+    }
+}
+
+bool br_npu::post_process(object_detect_result_list& detections)
 {
     std::vector<float> filter_boxes;
     std::vector<float> obj_probs;
     std::vector<int> class_ids;
     int valid_count = 0;
 
-    memset(&_detections, 0, sizeof(object_detect_result_list));
+    memset(&detections, 0, sizeof(object_detect_result_list));
 
     for (int i = 0; i < ANCHOR_BRANCH_NUM; i++)
     {
@@ -553,22 +640,46 @@ bool br_npu::post_process()
         const float x2 = x1 + filter_boxes[n * 4 + 2];
         const float y2 = y1 + filter_boxes[n * 4 + 3];
 
-        _detections.results[last_count].box.left   = clamp_value(x1, 0, _app_ctx.model_width);
-        _detections.results[last_count].box.top    = clamp_value(y1, 0, _app_ctx.model_height);
-        _detections.results[last_count].box.right  = clamp_value(x2, 0, _app_ctx.model_width);
-        _detections.results[last_count].box.bottom = clamp_value(y2, 0, _app_ctx.model_height);
-        _detections.results[last_count].prop = obj_probs[i];
-        _detections.results[last_count].cls_id = class_ids[n];
+        detections.results[last_count].box.left   = clamp_value(x1, 0, _app_ctx.model_width);
+        detections.results[last_count].box.top    = clamp_value(y1, 0, _app_ctx.model_height);
+        detections.results[last_count].box.right  = clamp_value(x2, 0, _app_ctx.model_width);
+        detections.results[last_count].box.bottom = clamp_value(y2, 0, _app_ctx.model_height);
+        detections.results[last_count].prop = obj_probs[i];
+        detections.results[last_count].cls_id = class_ids[n];
         last_count++;
     }
-    _detections.count = last_count;
+    detections.count = last_count;
 
     return true;
 }
 
-br_npu::object_detect_result_list* br_npu::get_detections()
+bool br_npu::map_detections_to_frame(object_detect_result_list& detections)
 {
-    return &_detections;
+    for (int i = 0; i < detections.count; i++)
+    {
+        object_detect_result* ptr_result = &(detections.results[i]);
+
+        // Переводим боксы из пространства входа модели в координаты кадра
+        ptr_result->box.left   = clamp_value(((float)ptr_result->box.left   - _ptr_rga->get_pad_x()) / _ptr_rga->get_scale(), 0, _settings._width - 1);
+        ptr_result->box.top    = clamp_value(((float)ptr_result->box.top    - _ptr_rga->get_pad_y()) / _ptr_rga->get_scale(), 0, _settings._height - 1);
+        ptr_result->box.right  = clamp_value(((float)ptr_result->box.right  - _ptr_rga->get_pad_x()) / _ptr_rga->get_scale(), 0, _settings._width - 1);
+        ptr_result->box.bottom = clamp_value(((float)ptr_result->box.bottom - _ptr_rga->get_pad_y()) / _ptr_rga->get_scale(), 0, _settings._height - 1);
+    }
+
+    return true;
+}
+
+br_npu::object_detect_result_list br_npu::get_detections()
+{
+    // Копия под замком: цикл рисует по ней, пока поток считает следующий кадр
+    std::lock_guard<std::mutex> lock(_mtx_detections);
+    return _detections;
+}
+
+uint32_t br_npu::get_inference_count()
+{
+    std::lock_guard<std::mutex> lock(_mtx_detections);
+    return _inference_count;
 }
 
 const char* br_npu::get_class_name(const int cls_id)
@@ -585,7 +696,18 @@ const char* br_npu::get_class_name(const int cls_id)
 
 bool br_npu::release()
 {
-    // Отвязываем входной тензор от блока кадра (сам блок принадлежит br_fsm)
+    // Останавливаем поток прогона до освобождения контекста и памяти
+    {
+        std::lock_guard<std::mutex> lock(_mtx);
+        _stop = true;
+    }
+    _cv.notify_all();
+    if (_worker.joinable())
+    {
+        _worker.join();
+    }
+
+    // Отвязываем входной тензор от блока кадра (сам блок и RGA-проход — за br_fsm и br_rga)
     if (_app_ctx.input_mems[0] != nullptr)
     {
         rknn_destroy_mem(_ctx, _app_ctx.input_mems[0]);
