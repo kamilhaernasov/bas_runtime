@@ -40,9 +40,6 @@ extern "C"
 class br_npu
 {
 public:
-    // Максимальное количество детекций на кадр
-    static constexpr int OBJ_NUMB_MAX_SIZE = 128;
-
     struct settings
     {
         uint16_t _width;
@@ -52,6 +49,8 @@ public:
         std::string _path_to_anchors;
         float _box_thresh;
         float _nms_thresh;
+        // Сколько рамок детекции помещается в кадр
+        int _max_detections;
         // Геометрия вписывания кадра во вход модели. Считает ее RGA: он и укладывает
         // кадр во вход, а NPU по ней возвращает боксы в координаты кадра
         float _scale;
@@ -78,7 +77,8 @@ public:
     {
         int id;
         int count;
-        object_detect_result results[OBJ_NUMB_MAX_SIZE];
+        // Размер списка задает настройка _max_detections
+        std::vector<object_detect_result> results;
     };
 
     explicit br_npu();
@@ -123,9 +123,9 @@ private:
         rknn_input_output_num io_num;
         rknn_tensor_attr* input_attrs;
         rknn_tensor_attr* output_attrs;
-        rknn_tensor_mem* input_mems[1];
-        // Выходных тензоров столько, сколько голов у модели: их число узнается из
-        // атрибутов, поэтому здесь не массив фиксированной длины
+        // Входных и выходных тензоров столько, сколько их у модели: числа узнаются из
+        // атрибутов, поэтому здесь не массивы фиксированной длины
+        std::vector<rknn_tensor_mem*> input_mems;
         std::vector<rknn_tensor_mem*> output_mems;
         rknn_dma_buf img_dma_buf;
         int model_channel;

@@ -217,6 +217,13 @@ bool br_npu::init(MB_BLK ptr_blk)
         return false;
     }
 
+    // Сколько рамок помещается в кадр, задается настройкой: при нуле детекций не будет
+    if (_settings._max_detections <= 0)
+    {
+        printf("%s: max detections is not set!\n", __PRETTY_FUNCTION__);
+        return false;
+    }
+
     // Создаем контекст NPU и загружаем модель
     ret = rknn_init(&_ctx, (void*)_settings._model_path.c_str(), 0, 0, nullptr);
     if (ret < 0)
@@ -292,7 +299,8 @@ bool br_npu::init(MB_BLK ptr_blk)
         return false;
     }
 
-    // Число голов — это число выходных тензоров модели, под них же резервируется память
+    // Тензоров в контексте столько, сколько их у модели, и число голов — это число
+    // выходных тензоров: все числа берутся из атрибутов, под них же резервируется память
     _app_ctx.io_num = io_num;
     _app_ctx.anchor_branch_num = io_num.n_output;
     if (_app_ctx.anchor_branch_num <= 0)
@@ -300,6 +308,13 @@ bool br_npu::init(MB_BLK ptr_blk)
         printf("%s: model has no outputs!\n", __PRETTY_FUNCTION__);
         return false;
     }
+    // Вход модели один: кадр в него укладывает RGA, привязать второй вход не к чему
+    if (io_num.n_input != 1)
+    {
+        printf("%s: model inputs %d is not supported!\n", __PRETTY_FUNCTION__, io_num.n_input);
+        return false;
+    }
+    _app_ctx.input_mems.assign(io_num.n_input, nullptr);
     _app_ctx.output_mems.assign(_app_ctx.anchor_branch_num, nullptr);
 
     // Якоря лежат парами (ширина, высота) и поделены между головами поровну
@@ -596,7 +611,10 @@ bool br_npu::post_process(object_detect_result_list& detections)
     std::vector<int> class_ids;
     int valid_count = 0;
 
-    memset(&detections, 0, sizeof(object_detect_result_list));
+    detections.id = 0;
+    detections.count = 0;
+    // Размер списка задает настройка, он же ограничивает число детекций в кадре
+    detections.results.assign(_settings._max_detections, object_detect_result {});
 
     for (int i = 0; i < _app_ctx.anchor_branch_num; i++)
     {
@@ -629,7 +647,7 @@ bool br_npu::post_process(object_detect_result_list& detections)
     int last_count = 0;
     for (int i = 0; i < valid_count; i++)
     {
-        if (index_array[i] == -1 || last_count >= OBJ_NUMB_MAX_SIZE)
+        if (index_array[i] == -1 || last_count >= _settings._max_detections)
         {
             continue;
         }
@@ -707,12 +725,16 @@ bool br_npu::release()
         _worker.join();
     }
 
-    // Отвязываем входной тензор от блока кадра (сам блок и RGA-проход — за br_fsm и br_rga)
-    if (_app_ctx.input_mems[0] != nullptr)
+    // Отвязываем входные тензоры от блоков кадра (сами блоки и RGA-проход — за br_fsm и br_rga)
+    for (size_t i = 0; i < _app_ctx.input_mems.size(); i++)
     {
-        rknn_destroy_mem(_ctx, _app_ctx.input_mems[0]);
-        _app_ctx.input_mems[0] = nullptr;
+        if (_app_ctx.input_mems[i] != nullptr)
+        {
+            rknn_destroy_mem(_ctx, _app_ctx.input_mems[i]);
+            _app_ctx.input_mems[i] = nullptr;
+        }
     }
+    _app_ctx.input_mems.clear();
 
     for (size_t i = 0; i < _app_ctx.output_mems.size(); i++)
     {

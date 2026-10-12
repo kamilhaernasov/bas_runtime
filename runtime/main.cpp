@@ -3,18 +3,25 @@
 #include "INIReader.h"
 #include "br_fsm.h"
 
-bool set_fsm_settings(br_fsm& f, const std::string& config_name);
+// Версия проекта из cmake
+#ifndef BAS_RUNTIME_VERSION
+#define BAS_RUNTIME_VERSION "unknown"
+#endif
+
+// Имя конфига с настройками
+static constexpr const char* CONFIG_NAME = "config.ini";
+
+bool set_fsm_settings(br_fsm& f);
 
 int main(int argc, char *argv[])
 {
-    std::cout << "Start..." << std::endl;
-
-    const std::string config_name = argc > 1 ? argv[1] : "config.ini";
+    std::cout << "BAS_RUNTIME started. Version: " BAS_RUNTIME_VERSION << std::endl;
+    const std::string config_name = CONFIG_NAME;
 
     br_fsm bas_fsm;
-    if (!set_fsm_settings(bas_fsm, config_name))
+    if (!set_fsm_settings(bas_fsm))
     {
-        printf("%s: %s fail!\n", __PRETTY_FUNCTION__, config_name.c_str());
+        printf("%s: %s can't find config.ini! Path to config:\n", __PRETTY_FUNCTION__, config_name.c_str());
         return 1;
     }
 
@@ -28,18 +35,16 @@ int main(int argc, char *argv[])
     return 0;
 }
 
-bool set_fsm_settings(br_fsm& f, const std::string& config_name)
+bool set_fsm_settings(br_fsm& f)
 {
-    INIReader reader(config_name);
+    INIReader reader(CONFIG_NAME);
 
     if (reader.ParseError() != 0)
     {
-        printf("%s: %s: %s\n", __PRETTY_FUNCTION__, config_name.c_str(), reader.ParseErrorMessage().c_str());
+        printf("%s: %s: can't parse config... Error:%s\n", __PRETTY_FUNCTION__, CONFIG_NAME, reader.ParseErrorMessage().c_str());
         return false;
     }
 
-    // В settings уже лежат значения по умолчанию: они и подставляются для
-    // отсутствующего ключа или значения, которое не удалось разобрать
     br_fsm::settings settings;
 
     // Камера
@@ -56,18 +61,21 @@ bool set_fsm_settings(br_fsm& f, const std::string& config_name)
     settings._path_to_anchors = reader.GetString("model", "anchors_path", settings._path_to_anchors);
     settings._box_thresh = static_cast<float>(reader.GetReal("model", "box_thresh", settings._box_thresh));
     settings._nms_thresh = static_cast<float>(reader.GetReal("model", "nms_thresh", settings._nms_thresh));
+    settings._max_detections = static_cast<int>(reader.GetUnsigned("model", "max_detections", settings._max_detections));
 
-    // Поток. Кодек пока один, поэтому все, кроме h264, оставляет дефолт
+    // Поток
     settings._codec = reader.GetString("venc", "codec", "h264") == "h264" ? br_venc::codec::H264 : settings._codec;
     settings._venc_gop = static_cast<uint16_t>(reader.GetUnsigned("venc", "gop", settings._venc_gop));
     settings._venc_bitrate = static_cast<uint32_t>(reader.GetUnsigned("venc", "bitrate", settings._venc_bitrate));
+
+    // RTSP
     settings._rtsp_port = static_cast<uint16_t>(reader.GetUnsigned("rtsp", "port", settings._rtsp_port));
     settings._rtsp_path = reader.GetString("rtsp", "path", settings._rtsp_path);
 
     f.set_settings(settings);
 
-    printf("%s: %s: ok | frame %ux%u | model %ux%u %s | rtsp %u%s\n",
-           __PRETTY_FUNCTION__, config_name.c_str(),
+    printf("%s: %s: apply: | frame %ux%u | model %ux%u %s | rtsp %u%s\n",
+           __PRETTY_FUNCTION__, CONFIG_NAME,
            static_cast<unsigned>(settings._width), static_cast<unsigned>(settings._height),
            static_cast<unsigned>(settings._width_model), static_cast<unsigned>(settings._height_model),
            settings._path_to_model.c_str(),

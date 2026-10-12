@@ -36,6 +36,8 @@ set(CMAKE_C_COMPILER "${SDK_PATH}/tools/linux/toolchain/arm-rockchip830-linux-uc
 set(CMAKE_CXX_COMPILER "${SDK_PATH}/tools/linux/toolchain/arm-rockchip830-linux-uclibcgnueabihf/bin/arm-rockchip830-linux-uclibcgnueabihf-g++")
 
 project(bas_runtime
+    # Версия проекта доезжает до кода как BAS_RUNTIME_VERSION
+    VERSION 0.1
     LANGUAGES C CXX
 )
 
@@ -61,6 +63,7 @@ add_executable(${PROJECT_NAME}
 # ---- Libs ----
 target_compile_definitions(${PROJECT_NAME} PRIVATE 
     RV1106_1103
+    BAS_RUNTIME_VERSION="${PROJECT_VERSION}"
 )
 target_link_directories(${PROJECT_NAME} PRIVATE
     "${SDK_PATH}/dependencies/lib/uclibc"
@@ -80,6 +83,9 @@ target_include_directories(inih PUBLIC
     ${CMAKE_SOURCE_DIR}/externals/inih
     ${CMAKE_SOURCE_DIR}/externals/inih/cpp
 )
+# Строка длиннее INI_MAX_LINE (по умолчанию 200 байт) для inih — ошибка разбора.
+# В config.ini комментарии на русском, а это 2 байта на символ, поэтому лимит поднят
+target_compile_definitions(inih PRIVATE INI_MAX_LINE=1024)
 
 # ---- Options ----
 # Compiler

@@ -57,6 +57,8 @@ public:
         std::string _path_to_anchors = "./model/anchors_yolov5.txt";
         float _box_thresh = 0.25f;
         float _nms_thresh = 0.45f;
+        // Максимальное количество рамок детекции на кадр
+        int _max_detections = 128;
         br_venc::codec _codec = br_venc::codec::H264;
         uint16_t _venc_gop = 30;
         // 0 — рассчитать битрейт от разрешения кадра

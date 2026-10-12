@@ -8,21 +8,23 @@
 
 br_fsm::br_fsm()
 {
-
+    std::cout << __PRETTY_FUNCTION__;
 }
 
 br_fsm::~br_fsm()
 {
-
+    std::cout << __PRETTY_FUNCTION__;
 }
 
 void br_fsm::set_settings(const settings settings)
 {
+    std::cout << __PRETTY_FUNCTION__;
     _settings = settings;
 }
 
 bool br_fsm::init()
 {
+    std::cout << __PRETTY_FUNCTION__;
     // MB_POOL
     if (!_mb_pool.init(_settings._mb_blk_count, _settings._width * _settings._height * _settings._bytes_per_pixel_out))
     {
@@ -128,6 +130,7 @@ bool br_fsm::init()
         ._path_to_anchors = _settings._path_to_anchors,
         ._box_thresh = _settings._box_thresh,
         ._nms_thresh = _settings._nms_thresh,
+        ._max_detections = _settings._max_detections,
         // Геометрию вписывания кадра во вход модели задает RGA, который и укладывает кадр
         ._scale = _brga.get_scale(),
         ._pad_x = _brga.get_pad_x(),
