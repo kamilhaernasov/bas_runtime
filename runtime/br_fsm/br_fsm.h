@@ -37,6 +37,7 @@ extern "C"
 #include "br_rga.h"
 #include "br_venc.h"
 #include "br_rtsp.h"
+#include "br_npu.h"
 
 class br_fsm 
 {
@@ -50,6 +51,7 @@ public:
         float _bytes_per_pixel_in = 1.5;
         uint8_t _id_camera = 0;
         std::string _path_to_iq_dir = "/etc/iqfiles";
+        std::string _path_to_model = "./model/yolov5.rknn";
         PIXEL_FORMAT_E _pixel_format_in = RK_FMT_YUV420SP;
         _Rga_SURF_FORMAT _pixel_format_in_rga = RK_FORMAT_YCbCr_420_SP;
         _Rga_SURF_FORMAT _pixel_format_out_rga = RK_FORMAT_RGB_888;
@@ -69,9 +71,12 @@ private:
 
     bool inited = false;
 
+    bool draw_detections(void* ptr_frame);
+
     br_mb_pool _mb_pool;
     br_vi _vi;
     br_rga _brga;
     br_venc _venc;
     br_rtsp _rtsp;
+    br_npu _npu;
 };

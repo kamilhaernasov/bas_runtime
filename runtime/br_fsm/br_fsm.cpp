@@ -1,5 +1,6 @@
 #include "br_fsm.h"
 
+#include <cstdio>
 #include <iostream>
 #include "opencv2/core/core.hpp"
 #include "opencv2/highgui/highgui.hpp"
@@ -97,6 +98,21 @@ bool br_fsm::init()
     };
     printf("%s: _rtsp.init: ok\n", __PRETTY_FUNCTION__);
 
+    // NPU
+    br_npu::settings npu_settings
+    {
+        ._width = _settings._width,
+        ._height = _settings._height,
+        ._model_path = _settings._path_to_model,
+        ._pixel_format_in_rga = _settings._pixel_format_in_rga,
+    };
+    _npu.set_settings(npu_settings);
+    if (!_npu.init())
+    {
+        return false;
+    };
+    printf("%s: _npu.init: ok\n", __PRETTY_FUNCTION__);
+
     return true;
 }
 
@@ -119,6 +135,20 @@ bool br_fsm::start()
         // Получаем указатель на фрейм после rga
         void* frame_after_brga = _mb_pool.get_ptr_from_mb_blk(_mb_pool.get_mb_blk(0));
         if (!is_failed && frame_after_brga == nullptr)
+        {
+            is_failed = true;
+        }
+        // Упаковываем кадр под вход модели и прогоняем детекцию
+        if (!is_failed && !_npu.prepare_input(_vi.get_last_frame()))
+        {
+            is_failed = true;
+        }
+        if (!is_failed && !_npu.inference())
+        {
+            is_failed = true;
+        }
+        // Рисуем рамки детекции на кадре
+        if (!is_failed && !draw_detections(frame_after_brga))
         {
             is_failed = true;
         }
@@ -161,8 +191,39 @@ bool br_fsm::start()
     _vi.release();
     _venc.release();
     _rtsp.release();
+    _npu.release();
     // Обязательно
     RK_MPI_SYS_Exit();
 
     return true;
  }
+
+bool br_fsm::draw_detections(void* ptr_frame)
+{
+    br_npu::object_detect_result_list* ptr_detections = _npu.get_detections();
+
+    // Кадр после RGA лежит в формате RGB888
+    cv::Mat frame(cv::Size(_settings._width, _settings._height), CV_8UC3, ptr_frame);
+
+    for (int i = 0; i < ptr_detections->count; i++)
+    {
+        br_npu::object_detect_result* ptr_result = &(ptr_detections->results[i]);
+
+        printf("%s @ (%d %d %d %d) %.3f\n",
+               br_npu::get_class_name(ptr_result->cls_id),
+               ptr_result->box.left, ptr_result->box.top, ptr_result->box.right, ptr_result->box.bottom,
+               ptr_result->prop);
+
+        cv::rectangle(frame,
+                      cv::Point(ptr_result->box.left, ptr_result->box.top),
+                      cv::Point(ptr_result->box.right, ptr_result->box.bottom),
+                      cv::Scalar(0, 255, 0), 3);
+
+        char text[64];
+        sprintf(text, "%s %.1f%%", br_npu::get_class_name(ptr_result->cls_id), ptr_result->prop * 100);
+        cv::putText(frame, text, cv::Point(ptr_result->box.left, ptr_result->box.top - 8),
+                    cv::FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(0, 255, 0), 2);
+    }
+
+    return true;
+}
