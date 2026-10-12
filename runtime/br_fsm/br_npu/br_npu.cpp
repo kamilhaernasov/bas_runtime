@@ -468,11 +468,19 @@ bool br_npu::init_input_buffer(rknn_tensor_attr* ptr_input_attr)
         return false;
     }
 
-    // Привязываем блок памяти к входному тензору модели
-    _app_ctx.input_mems[0] = rknn_create_mem_from_mb_blk(_ctx, _mb_blk, 0);
+    // Привязываем блок памяти к входному тензору модели.
+    // rknn_create_mem_from_mb_blk в librknnmrt этой версии не экспортируется (есть только
+    // в заголовке), поэтому отдаем тот же блок через его dma-buf дескриптор.
+    _app_ctx.input_mems[0] = rknn_create_mem_from_fd(
+        _ctx,
+        RK_MPI_MB_Handle2Fd(_mb_blk),
+        RK_MPI_MB_Handle2VirAddr(_mb_blk),
+        ptr_input_attr->size_with_stride,
+        0
+    );
     if (_app_ctx.input_mems[0] == nullptr)
     {
-        printf("%s: rknn_create_mem_from_mb_blk fail!\n", __PRETTY_FUNCTION__);
+        printf("%s: rknn_create_mem_from_fd fail!\n", __PRETTY_FUNCTION__);
         return false;
     }
 
