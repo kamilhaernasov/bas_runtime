@@ -25,16 +25,19 @@ cmake_minimum_required(VERSION 3.21)
 
 set(PROJECT_NAME bas_runtime)
 set(CMAKE_INSTALL_PREFIX "${CMAKE_SOURCE_DIR}/install/" CACHE PATH "Install prefix")
-project(bas_runtime
-    LANGUAGES CXX
-)
 
 # ---- SDK & PATH ----
+# Компиляторы задаются до project(): языки включаются вместе с компиляторами, позже
+# выставленный CMAKE_C_COMPILER/CMAKE_CXX_COMPILER уже не влияет на сборку.
 # Path to SDK from env
 set(SDK_PATH $ENV{LUCKFOX_SDK_PATH})
 # Path to compilers from SDK
 set(CMAKE_C_COMPILER "${SDK_PATH}/tools/linux/toolchain/arm-rockchip830-linux-uclibcgnueabihf/bin/arm-rockchip830-linux-uclibcgnueabihf-gcc")
 set(CMAKE_CXX_COMPILER "${SDK_PATH}/tools/linux/toolchain/arm-rockchip830-linux-uclibcgnueabihf/bin/arm-rockchip830-linux-uclibcgnueabihf-g++")
+
+project(bas_runtime
+    LANGUAGES C CXX
+)
 
 # ---- C++ settings ----
 set(CMAKE_CXX_STANDARD 17)
@@ -69,14 +72,14 @@ find_package(OpenCV REQUIRED QUIET)
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
 # Inih
-# add_library(inih STATIC
-#     ${CMAKE_SOURCE_DIR}/externals/inih/ini.c
-#     ${CMAKE_SOURCE_DIR}/externals/inih/cpp/INIReader.cpp
-# )
-# target_include_directories(inih PUBLIC
-#     ${CMAKE_SOURCE_DIR}/externals/inih
-#     ${CMAKE_SOURCE_DIR}/externals/inih/cpp
-# )
+add_library(inih STATIC
+    ${CMAKE_SOURCE_DIR}/externals/inih/ini.c
+    ${CMAKE_SOURCE_DIR}/externals/inih/cpp/INIReader.cpp
+)
+target_include_directories(inih PUBLIC
+    ${CMAKE_SOURCE_DIR}/externals/inih
+    ${CMAKE_SOURCE_DIR}/externals/inih/cpp
+)
 
 # ---- Options ----
 # Compiler
@@ -102,7 +105,7 @@ target_link_libraries(${PROJECT_NAME}
     pthread
     rtsp
     rga
-    #inih
+    inih
 )
 
 # ---- Include dirs ----
@@ -134,3 +137,5 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 )
 
 install(TARGETS ${PROJECT_NAME} DESTINATION .)
+# Конфиг читается из рабочего каталога, поэтому кладем его рядом с бинарником
+install(FILES ${CMAKE_SOURCE_DIR}/config.ini DESTINATION .)

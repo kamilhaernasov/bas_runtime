@@ -16,6 +16,11 @@ br_fsm::~br_fsm()
 
 }
 
+void br_fsm::set_settings(const settings settings)
+{
+    _settings = settings;
+}
+
 bool br_fsm::init()
 {
     // MB_POOL
@@ -85,7 +90,7 @@ bool br_fsm::init()
     br_venc::settings venc_settings
     {
         ._codec = _settings._codec,
-        ._bitrate = _settings._width * _settings._height / 8 * 30,
+        ._bitrate = _settings._venc_bitrate == 0 ? _settings._width * _settings._height / 8 * 30 : _settings._venc_bitrate,
         ._gop = _settings._venc_gop,
         ._width = _settings._width,
         ._height = _settings._height,
@@ -102,8 +107,8 @@ bool br_fsm::init()
     // RTSP
     br_rtsp::settings rtsp_settings
     {
-        ._port = 554,
-        ._path = "/live/0",
+        ._port = _settings._rtsp_port,
+        ._path = _settings._rtsp_path,
         ._codec_rtsp = RTSP_CODEC_ID_VIDEO_H264,
     };
     _rtsp.set_settings(rtsp_settings);
@@ -119,10 +124,18 @@ bool br_fsm::init()
         ._width = _settings._width,
         ._height = _settings._height,
         ._model_path = _settings._path_to_model,
+        ._path_to_labels = _settings._path_to_labels,
+        ._path_to_anchors = _settings._path_to_anchors,
+        ._box_thresh = _settings._box_thresh,
+        ._nms_thresh = _settings._nms_thresh,
+        // Геометрию вписывания кадра во вход модели задает RGA, который и укладывает кадр
+        ._scale = _brga.get_scale(),
+        ._pad_x = _brga.get_pad_x(),
+        ._pad_y = _brga.get_pad_y(),
     };
     _npu.set_settings(npu_settings);
-    // Блок под вход модели и RGA-модуль, который в него пишет кадр
-    if (!_npu.init(_mb_pool_npu.get_mb_blk(0), &_brga))
+    // Блок под вход модели: в него пишет RGA, из него читает NPU
+    if (!_npu.init(_mb_pool_npu.get_mb_blk(0)))
     {
         return false;
     };
@@ -155,10 +168,19 @@ bool br_fsm::start()
         {
             is_failed = true;
         }
-        // Отдаем кадр в поток детекции: если NPU занят предыдущим кадром, этот пропускается
-        if (!is_failed && !_npu.prepare_input(_vi.get_last_frame()))
+        // Отдаем кадр в поток детекции. Спрашиваем NPU до прохода RGA: если он занят
+        // предыдущим кадром, кадр пропускается и вписывание в вход модели не тратится
+        if (!is_failed && _npu.is_input_free())
         {
-            is_failed = true;
+            // Кадр под вход модели укладывает RGA, и только потом вход уходит на прогон
+            if (!_brga.process_frame_model(_vi.get_last_frame()))
+            {
+                is_failed = true;
+            }
+            else
+            {
+                _npu.submit_input();
+            }
         }
         _stage_us.npu += take_stage_time();
         // Рисуем рамки по последнему готовому результату детекции

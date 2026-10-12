@@ -3,7 +3,9 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <set>
+#include <string>
 #include <vector>
 
 // Ниже порт postprocess.cc из примера luckfox_pico_rtsp_yolov5: деквантование выходных
@@ -11,20 +13,16 @@
 // доступны только методам br_npu.
 namespace
 {
-    // Путь до файла с названиями классов модели
-    constexpr const char* LABEL_NAME_TXT_PATH = "./model/coco_80_labels_list.txt";
-    constexpr int OBJ_CLASS_NUM = 80;
-    constexpr int PROP_BOX_SIZE = 5 + OBJ_CLASS_NUM;
-    constexpr int ANCHOR_PER_BRANCH = 3;
-    constexpr int ANCHOR_BRANCH_NUM = 3;
-    // Цвет полей кадра входа модели (114, 114, 114) — такой же, как при обучении модели
-    constexpr int PADDING_COLOR = 0x727272;
+    // Сколько значений выходного тензора приходится на один бокс помимо оценок классов:
+    // четыре координаты и уверенность объекта. Это формат головы YOLOv5, а не свойство
+    // модели: тензор отдает только общее число каналов, где в них кончаются координаты,
+    // знает только сам алгоритм разбора (см. индексы hw_ptr ниже)
+    constexpr int BOX_AND_CONF_SIZE = 5;
 
-    const int anchor[ANCHOR_BRANCH_NUM][6] = {{10, 13, 16, 30, 33, 23},
-                                              {30, 61, 62, 45, 59, 119},
-                                              {116, 90, 156, 198, 373, 326}};
-
-    char* labels[OBJ_CLASS_NUM] = {};
+    // Названия классов и якоря голов — свойства конкретной модели, поэтому лежат
+    // в файлах рядом с ней и читаются в init
+    std::vector<std::string> labels;
+    std::vector<float> anchors;
 
     int clamp_value(float val, int min, int max) { return val > min ? (val < max ? val : max) : min; }
 
@@ -42,98 +40,68 @@ namespace
 
     float deqnt_affine_to_f32(int8_t qnt, int32_t zp, float scale) { return ((float)qnt - (float)zp) * scale; }
 
-    char* read_line(FILE* fp, char* buffer, int* len)
+    // Файл меток: по названию класса в строке, число строк задает число классов модели
+    bool load_labels(const std::string& path)
     {
-        int ch;
-        int i = 0;
-        size_t buff_len = 0;
-
-        buffer = (char*)malloc(buff_len + 1);
-        if (!buffer)
+        std::ifstream file(path);
+        if (!file.is_open())
         {
-            return nullptr;
-        }
-
-        while ((ch = fgetc(fp)) != '\n' && ch != EOF)
-        {
-            buff_len++;
-            void* tmp = realloc(buffer, buff_len + 1);
-            if (tmp == nullptr)
-            {
-                free(buffer);
-                return nullptr;
-            }
-            buffer = (char*)tmp;
-
-            buffer[i] = (char)ch;
-            i++;
-        }
-        buffer[i] = '\0';
-
-        *len = buff_len;
-
-        // Дошли до конца файла
-        if (ch == EOF && (i == 0 || ferror(fp)))
-        {
-            free(buffer);
-            return nullptr;
-        }
-        return buffer;
-    }
-
-    int read_lines(const char* file_name, char* lines[], int max_line)
-    {
-        FILE* file = fopen(file_name, "r");
-        char* s = nullptr;
-        int i = 0;
-        int n = 0;
-
-        if (file == nullptr)
-        {
-            printf("Open %s fail!\n", file_name);
-            return -1;
-        }
-
-        while ((s = read_line(file, s, &n)) != nullptr)
-        {
-            lines[i++] = s;
-            if (i >= max_line)
-            {
-                break;
-            }
-        }
-        fclose(file);
-        return i;
-    }
-
-    int load_label_name(const char* location_filename, char* label[])
-    {
-        printf("load lable %s\n", location_filename);
-        read_lines(location_filename, label, OBJ_CLASS_NUM);
-        return 0;
-    }
-
-    bool init_post_process()
-    {
-        if (load_label_name(LABEL_NAME_TXT_PATH, labels) < 0)
-        {
-            printf("Load %s failed!\n", LABEL_NAME_TXT_PATH);
+            printf("%s: open %s fail!\n", __PRETTY_FUNCTION__, path.c_str());
             return false;
         }
 
-        return true;
-    }
-
-    void deinit_post_process()
-    {
-        for (int i = 0; i < OBJ_CLASS_NUM; i++)
+        labels.clear();
+        std::string line;
+        while (std::getline(file, line))
         {
-            if (labels[i] != nullptr)
+            // В файле могут быть виндовые переводы строк
+            if (!line.empty() && line.back() == '\r')
             {
-                free(labels[i]);
-                labels[i] = nullptr;
+                line.pop_back();
+            }
+            if (!line.empty())
+            {
+                labels.push_back(line);
             }
         }
+
+        printf("%s: %s: %u classes\n", __PRETTY_FUNCTION__, path.c_str(), (unsigned)labels.size());
+
+        return !labels.empty();
+    }
+
+    // Файл якорей: числа парами (ширина, высота), по паре на якорь.
+    // Идут подряд по головам: сначала все якоря старшей головы, потом следующей
+    bool load_anchors(const std::string& path)
+    {
+        std::ifstream file(path);
+        if (!file.is_open())
+        {
+            printf("%s: open %s fail!\n", __PRETTY_FUNCTION__, path.c_str());
+            return false;
+        }
+
+        anchors.clear();
+        std::string line;
+        while (std::getline(file, line))
+        {
+            const char* cursor = line.c_str();
+            while (*cursor != '\0')
+            {
+                char* end = nullptr;
+                const double value = strtod(cursor, &end);
+                if (end == cursor)
+                {
+                    break;
+                }
+                anchors.push_back(static_cast<float>(value));
+                cursor = end;
+            }
+        }
+
+        printf("%s: %s: %u values\n", __PRETTY_FUNCTION__, path.c_str(), (unsigned)anchors.size());
+
+        return !anchors.empty();
     }
 
     float calculate_overlap(float xmin0, float ymin0, float xmax0, float ymax0,
@@ -217,81 +185,11 @@ namespace
         return low;
     }
 
-    // RV1106 отдает выходные тензоры в NHWC, поэтому боксы лежат по соседним адресам
-    int process_i8_rv1106(int8_t* input, const int* ptr_anchor, const int grid_h, const int grid_w, const int stride,
-                          const float threshold, const int32_t zp, const float scale,
-                          std::vector<float>& boxes, std::vector<float>& box_scores, std::vector<int>& class_ids)
-    {
-        int valid_count = 0;
-        int8_t thres_i8 = qnt_f32_to_affine(threshold, zp, scale);
-
-        const int align_c = PROP_BOX_SIZE * ANCHOR_PER_BRANCH;
-
-        for (int h = 0; h < grid_h; h++)
-        {
-            for (int w = 0; w < grid_w; w++)
-            {
-                for (int a = 0; a < ANCHOR_PER_BRANCH; a++)
-                {
-                    int hw_offset = h * grid_w * align_c + w * align_c + a * PROP_BOX_SIZE;
-                    int8_t* hw_ptr = input + hw_offset;
-                    int8_t box_confidence = hw_ptr[4];
-
-                    if (box_confidence >= thres_i8)
-                    {
-                        int8_t max_class_probs = hw_ptr[5];
-                        int max_class_id = 0;
-                        for (int k = 1; k < OBJ_CLASS_NUM; ++k)
-                        {
-                            int8_t prob = hw_ptr[5 + k];
-                            if (prob > max_class_probs)
-                            {
-                                max_class_id = k;
-                                max_class_probs = prob;
-                            }
-                        }
-
-                        float box_conf_f32 = deqnt_affine_to_f32(box_confidence, zp, scale);
-                        float class_prob_f32 = deqnt_affine_to_f32(max_class_probs, zp, scale);
-                        float limit_score = box_conf_f32 * class_prob_f32;
-
-                        if (limit_score > threshold)
-                        {
-                            float box_x = deqnt_affine_to_f32(hw_ptr[0], zp, scale) * 2.0 - 0.5;
-                            float box_y = deqnt_affine_to_f32(hw_ptr[1], zp, scale) * 2.0 - 0.5;
-                            float box_w = deqnt_affine_to_f32(hw_ptr[2], zp, scale) * 2.0;
-                            float box_h = deqnt_affine_to_f32(hw_ptr[3], zp, scale) * 2.0;
-                            box_w = box_w * box_w;
-                            box_h = box_h * box_h;
-
-                            box_x = (box_x + w) * (float)stride;
-                            box_y = (box_y + h) * (float)stride;
-                            box_w *= (float)ptr_anchor[a * 2];
-                            box_h *= (float)ptr_anchor[a * 2 + 1];
-
-                            box_x -= (box_w / 2.0);
-                            box_y -= (box_h / 2.0);
-
-                            boxes.push_back(box_x);
-                            boxes.push_back(box_y);
-                            boxes.push_back(box_w);
-                            boxes.push_back(box_h);
-                            box_scores.push_back(limit_score);
-                            class_ids.push_back(max_class_id);
-                            valid_count++;
-                        }
-                    }
-                }
-            }
-        }
-        return valid_count;
-    }
 }
 
 br_npu::br_npu()
 {
-    // Обнуляем контекст модели до инициализации
-    memset(&_app_ctx, 0, sizeof(_app_ctx));
+
 }
 
 br_npu::~br_npu()
@@ -308,16 +206,16 @@ void br_npu::dump_tensor_attr(const rknn_tensor_attr* ptr_attr)
            get_qnt_type_string(ptr_attr->qnt_type), ptr_attr->zp, ptr_attr->scale);
 }
 
-bool br_npu::init(MB_BLK ptr_blk, br_rga* ptr_rga)
+bool br_npu::init(MB_BLK ptr_blk)
 {
     int ret = 0;
 
-    if (ptr_rga == nullptr)
+    // Кадр во вход укладывает RGA, а боксы возвращаются в координаты кадра по его геометрии
+    if (_settings._scale <= 0)
     {
-        printf("%s: ptr_rga is null!\n", __PRETTY_FUNCTION__);
+        printf("%s: letterbox scale is not set!\n", __PRETTY_FUNCTION__);
         return false;
     }
-    _ptr_rga = ptr_rga;
 
     // Создаем контекст NPU и загружаем модель
     ret = rknn_init(&_ctx, (void*)_settings._model_path.c_str(), 0, 0, nullptr);
@@ -387,6 +285,58 @@ bool br_npu::init(MB_BLK ptr_blk, br_rga* ptr_rga)
     printf("%s: model input height=%d, width=%d, channel=%d\n",
            __PRETTY_FUNCTION__, _app_ctx.model_height, _app_ctx.model_width, _app_ctx.model_channel);
 
+    // Названия классов и якоря голов лежат в файлах рядом с моделью: обе вещи относятся
+    // именно к ней, поэтому задаются данными, а не константами
+    if (!load_labels(_settings._path_to_labels) || !load_anchors(_settings._path_to_anchors))
+    {
+        return false;
+    }
+
+    // Число голов — это число выходных тензоров модели, под них же резервируется память
+    _app_ctx.io_num = io_num;
+    _app_ctx.anchor_branch_num = io_num.n_output;
+    if (_app_ctx.anchor_branch_num <= 0)
+    {
+        printf("%s: model has no outputs!\n", __PRETTY_FUNCTION__);
+        return false;
+    }
+    _app_ctx.output_mems.assign(_app_ctx.anchor_branch_num, nullptr);
+
+    // Якоря лежат парами (ширина, высота) и поделены между головами поровну
+    const int anchor_count = (int)anchors.size() / 2;
+    if (anchor_count % _app_ctx.anchor_branch_num != 0)
+    {
+        printf("%s: anchors %d do not match heads %d!\n",
+               __PRETTY_FUNCTION__, anchor_count, _app_ctx.anchor_branch_num);
+        return false;
+    }
+    _app_ctx.anchor_per_branch = anchor_count / _app_ctx.anchor_branch_num;
+
+    // Каналы выхода: на каждую ячейку сетки по prop_box_size значений на каждый якорь
+    const int channels = (int)output_attrs[0].dims[output_attrs[0].n_dims - 1];
+    if (channels % _app_ctx.anchor_per_branch != 0)
+    {
+        printf("%s: output channels %d do not match anchors per head %d!\n",
+               __PRETTY_FUNCTION__, channels, _app_ctx.anchor_per_branch);
+        return false;
+    }
+    _app_ctx.prop_box_size = channels / _app_ctx.anchor_per_branch;
+
+    // Классов столько, сколько строк в файле меток: имена классов и выход модели
+    // описывают одну модель, поэтому их числа должны сойтись
+    _app_ctx.class_num = (int)labels.size();
+    if (_app_ctx.prop_box_size != _app_ctx.class_num + BOX_AND_CONF_SIZE)
+    {
+        printf("%s: classes mismatch: model %d, %s %d!\n",
+               __PRETTY_FUNCTION__, _app_ctx.prop_box_size - BOX_AND_CONF_SIZE,
+               _settings._path_to_labels.c_str(), _app_ctx.class_num);
+        return false;
+    }
+
+    printf("%s: heads=%d, anchors per head=%d, box size=%d, classes=%d\n",
+           __PRETTY_FUNCTION__, _app_ctx.anchor_branch_num, _app_ctx.anchor_per_branch,
+           _app_ctx.prop_box_size, _app_ctx.class_num);
+
     // По умолчанию тип входа int8 (нормализация и квантование считаются снаружи модели).
     // Uint8 позволяет совместить нормализацию и квантование с NPU
     input_attrs[0].type = RKNN_TENSOR_UINT8;
@@ -428,7 +378,7 @@ bool br_npu::init(MB_BLK ptr_blk, br_rga* ptr_rga)
     printf("%s: input size_with_stride=%u\n", __PRETTY_FUNCTION__, input_attrs[0].size_with_stride);
 
     // Привязываем память выходных тензоров
-    for (uint32_t i = 0; i < io_num.n_output; i++)
+    for (size_t i = 0; i < _app_ctx.output_mems.size(); i++)
     {
         _app_ctx.output_mems[i] = rknn_create_mem(_ctx, output_attrs[i].size_with_stride);
         ret = rknn_set_io_mem(_ctx, _app_ctx.output_mems[i], &output_attrs[i]);
@@ -451,17 +401,10 @@ bool br_npu::init(MB_BLK ptr_blk, br_rga* ptr_rga)
         _app_ctx.is_quant = false;
     }
 
-    _app_ctx.io_num = io_num;
     _app_ctx.input_attrs = (rknn_tensor_attr *)malloc(io_num.n_input * sizeof(rknn_tensor_attr));
     memcpy(_app_ctx.input_attrs, input_attrs, io_num.n_input * sizeof(rknn_tensor_attr));
     _app_ctx.output_attrs = (rknn_tensor_attr *)malloc(io_num.n_output * sizeof(rknn_tensor_attr));
     memcpy(_app_ctx.output_attrs, output_attrs, io_num.n_output * sizeof(rknn_tensor_attr));
-
-    // Загружаем названия классов модели
-    if (!init_post_process())
-    {
-        return false;
-    }
 
     // Прогон модели и разбор ее выходов уходят в отдельный поток
     _worker = std::thread(&br_npu::worker, this);
@@ -471,34 +414,26 @@ bool br_npu::init(MB_BLK ptr_blk, br_rga* ptr_rga)
     return true;
 }
 
-bool br_npu::prepare_input(VIDEO_FRAME_INFO_S* ptr_frame)
+bool br_npu::is_input_free()
+{
+    std::lock_guard<std::mutex> lock(_mtx);
+
+    // Пока вход занят предыдущим кадром, кадр для детекции пропускается
+    return _input_state == input_state::free;
+}
+
+void br_npu::submit_input()
 {
     {
         std::lock_guard<std::mutex> lock(_mtx);
         if (_input_state != input_state::free)
         {
-            // NPU занят прогоном предыдущего кадра: этот кадр для детекции пропускаем
-            return true;
+            return;
         }
-        // Занимаем вход: прогон не должен стартовать на недозаполненном кадре
-        _input_state = input_state::busy;
-    }
-
-    if (!_ptr_rga->process_frame_model(ptr_frame))
-    {
-        // Вход остался незаполненным: освобождаем, иначе поток будет ждать его вечно
-        std::lock_guard<std::mutex> lock(_mtx);
-        _input_state = input_state::free;
-        return false;
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(_mtx);
+        // Кадр уже уложен: прогон может стартовать
         _input_state = input_state::ready;
     }
     _cv.notify_one();
-
-    return true;
 }
 
 bool br_npu::run()
@@ -573,6 +508,87 @@ void br_npu::worker()
     }
 }
 
+// Разбор одной головы модели: раскладка NHWC, деквантование и декодирование боксов.
+// Число классов, размер описания бокса и якоря берутся из контекста модели, а не из
+// констант: в выходном тензоре на каждую ячейку сетки идет anchor_per_branch якорей
+// по prop_box_size значений
+int br_npu::process_head(const int head, std::vector<float>& boxes, std::vector<float>& box_scores,
+                         std::vector<int>& class_ids)
+{
+    const int grid_h = _app_ctx.output_attrs[head].dims[2];
+    const int grid_w = _app_ctx.output_attrs[head].dims[1];
+    const int stride = _app_ctx.model_height / grid_h;
+    const int32_t zp = _app_ctx.output_attrs[head].zp;
+    const float scale = _app_ctx.output_attrs[head].scale;
+    const int8_t* input = (int8_t*)(_app_ctx.output_mems[head]->virt_addr);
+    const float threshold = _settings._box_thresh;
+    const int8_t thres_i8 = qnt_f32_to_affine(threshold, zp, scale);
+    const int align_c = _app_ctx.prop_box_size * _app_ctx.anchor_per_branch;
+    const float* ptr_anchor = &anchors.at(head * _app_ctx.anchor_per_branch * 2);
+
+    int valid_count = 0;
+
+    for (int h = 0; h < grid_h; h++)
+    {
+        for (int w = 0; w < grid_w; w++)
+        {
+            for (int a = 0; a < _app_ctx.anchor_per_branch; a++)
+            {
+                const int hw_offset = h * grid_w * align_c + w * align_c + a * _app_ctx.prop_box_size;
+                const int8_t* hw_ptr = input + hw_offset;
+                const int8_t box_confidence = hw_ptr[4];
+
+                if (box_confidence >= thres_i8)
+                {
+                    int8_t max_class_probs = hw_ptr[BOX_AND_CONF_SIZE];
+                    int max_class_id = 0;
+                    for (int k = 1; k < _app_ctx.class_num; ++k)
+                    {
+                        const int8_t prob = hw_ptr[BOX_AND_CONF_SIZE + k];
+                        if (prob > max_class_probs)
+                        {
+                            max_class_id = k;
+                            max_class_probs = prob;
+                        }
+                    }
+
+                    const float box_conf_f32 = deqnt_affine_to_f32(box_confidence, zp, scale);
+                    const float class_prob_f32 = deqnt_affine_to_f32(max_class_probs, zp, scale);
+                    const float limit_score = box_conf_f32 * class_prob_f32;
+
+                    if (limit_score > threshold)
+                    {
+                        float box_x = deqnt_affine_to_f32(hw_ptr[0], zp, scale) * 2.0 - 0.5;
+                        float box_y = deqnt_affine_to_f32(hw_ptr[1], zp, scale) * 2.0 - 0.5;
+                        float box_w = deqnt_affine_to_f32(hw_ptr[2], zp, scale) * 2.0;
+                        float box_h = deqnt_affine_to_f32(hw_ptr[3], zp, scale) * 2.0;
+                        box_w = box_w * box_w;
+                        box_h = box_h * box_h;
+
+                        box_x = (box_x + w) * (float)stride;
+                        box_y = (box_y + h) * (float)stride;
+                        box_w *= ptr_anchor[a * 2];
+                        box_h *= ptr_anchor[a * 2 + 1];
+
+                        box_x -= (box_w / 2.0);
+                        box_y -= (box_h / 2.0);
+
+                        boxes.push_back(box_x);
+                        boxes.push_back(box_y);
+                        boxes.push_back(box_w);
+                        boxes.push_back(box_h);
+                        box_scores.push_back(limit_score);
+                        class_ids.push_back(max_class_id);
+                        valid_count++;
+                    }
+                }
+            }
+        }
+    }
+
+    return valid_count;
+}
+
 bool br_npu::post_process(object_detect_result_list& detections)
 {
     std::vector<float> filter_boxes;
@@ -582,28 +598,12 @@ bool br_npu::post_process(object_detect_result_list& detections)
 
     memset(&detections, 0, sizeof(object_detect_result_list));
 
-    for (int i = 0; i < ANCHOR_BRANCH_NUM; i++)
+    for (int i = 0; i < _app_ctx.anchor_branch_num; i++)
     {
         // RV1106 отдает выходные тензоры в NHWC и только в i8
-        const int grid_h = _app_ctx.output_attrs[i].dims[2];
-        const int grid_w = _app_ctx.output_attrs[i].dims[1];
-        const int stride = _app_ctx.model_height / grid_h;
-
         if (_app_ctx.is_quant)
         {
-            valid_count += process_i8_rv1106(
-                (int8_t *)(_app_ctx.output_mems[i]->virt_addr),
-                anchor[i],
-                grid_h,
-                grid_w,
-                stride,
-                BOX_THRESH,
-                _app_ctx.output_attrs[i].zp,
-                _app_ctx.output_attrs[i].scale,
-                filter_boxes,
-                obj_probs,
-                class_ids
-            );
+            valid_count += process_head(i, filter_boxes, obj_probs, class_ids);
         }
     }
 
@@ -623,7 +623,7 @@ bool br_npu::post_process(object_detect_result_list& detections)
     std::set<int> class_set(std::begin(class_ids), std::end(class_ids));
     for (auto c : class_set)
     {
-        nms(valid_count, filter_boxes, class_ids, index_array, c, NMS_THRESH);
+        nms(valid_count, filter_boxes, class_ids, index_array, c, _settings._nms_thresh);
     }
 
     int last_count = 0;
@@ -660,10 +660,10 @@ bool br_npu::map_detections_to_frame(object_detect_result_list& detections)
         object_detect_result* ptr_result = &(detections.results[i]);
 
         // Переводим боксы из пространства входа модели в координаты кадра
-        ptr_result->box.left   = clamp_value(((float)ptr_result->box.left   - _ptr_rga->get_pad_x()) / _ptr_rga->get_scale(), 0, _settings._width - 1);
-        ptr_result->box.top    = clamp_value(((float)ptr_result->box.top    - _ptr_rga->get_pad_y()) / _ptr_rga->get_scale(), 0, _settings._height - 1);
-        ptr_result->box.right  = clamp_value(((float)ptr_result->box.right  - _ptr_rga->get_pad_x()) / _ptr_rga->get_scale(), 0, _settings._width - 1);
-        ptr_result->box.bottom = clamp_value(((float)ptr_result->box.bottom - _ptr_rga->get_pad_y()) / _ptr_rga->get_scale(), 0, _settings._height - 1);
+        ptr_result->box.left   = clamp_value(((float)ptr_result->box.left   - _settings._pad_x) / _settings._scale, 0, _settings._width - 1);
+        ptr_result->box.top    = clamp_value(((float)ptr_result->box.top    - _settings._pad_y) / _settings._scale, 0, _settings._height - 1);
+        ptr_result->box.right  = clamp_value(((float)ptr_result->box.right  - _settings._pad_x) / _settings._scale, 0, _settings._width - 1);
+        ptr_result->box.bottom = clamp_value(((float)ptr_result->box.bottom - _settings._pad_y) / _settings._scale, 0, _settings._height - 1);
     }
 
     return true;
@@ -686,12 +686,12 @@ const char* br_npu::get_class_name(const int cls_id)
 {
     static char null_str[] = "null";
 
-    if (cls_id < 0 || cls_id >= OBJ_CLASS_NUM || labels[cls_id] == nullptr)
+    if (cls_id < 0 || cls_id >= (int)labels.size())
     {
         return null_str;
     }
 
-    return labels[cls_id];
+    return labels[cls_id].c_str();
 }
 
 bool br_npu::release()
@@ -714,7 +714,7 @@ bool br_npu::release()
         _app_ctx.input_mems[0] = nullptr;
     }
 
-    for (uint32_t i = 0; i < _app_ctx.io_num.n_output; i++)
+    for (size_t i = 0; i < _app_ctx.output_mems.size(); i++)
     {
         if (_app_ctx.output_mems[i] != nullptr)
         {
@@ -722,6 +722,7 @@ bool br_npu::release()
             _app_ctx.output_mems[i] = nullptr;
         }
     }
+    _app_ctx.output_mems.clear();
 
     if (_app_ctx.input_attrs != nullptr)
     {
@@ -741,7 +742,9 @@ bool br_npu::release()
         _ctx = 0;
     }
 
-    deinit_post_process();
+    // Значения из файлов больше не нужны: контекст модели уже разобран
+    labels.clear();
+    anchors.clear();
 
     return true;
 }

@@ -28,16 +28,14 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 extern "C"
 {
     #include "rk_comm_mb.h"
     #include "rk_mpi_mb.h"
-    #include "rk_comm_video.h"
     #include "rknn_api.h"
 };
-
-#include "br_rga.h"
 
 class br_npu
 {
@@ -50,6 +48,15 @@ public:
         uint16_t _width;
         uint16_t _height;
         std::string _model_path;
+        std::string _path_to_labels;
+        std::string _path_to_anchors;
+        float _box_thresh;
+        float _nms_thresh;
+        // Геометрия вписывания кадра во вход модели. Считает ее RGA: он и укладывает
+        // кадр во вход, а NPU по ней возвращает боксы в координаты кадра
+        float _scale;
+        uint16_t _pad_x;
+        uint16_t _pad_y;
     };
 
     struct image_rect_t
@@ -77,22 +84,21 @@ public:
     explicit br_npu();
     ~br_npu();
 
-    // ptr_blk — блок под вход модели, ptr_rga — модуль RGA, который в него пишет кадр
-    bool init(MB_BLK ptr_blk, br_rga* ptr_rga);
+    // ptr_blk — блок под вход модели: в него кадр укладывает RGA, его же читает NPU
+    bool init(MB_BLK ptr_blk);
     bool release();
     void set_settings(const settings settings);
 
-    // Заполняет вход модели кадром. Не блокирует: если NPU занят прогоном предыдущего
-    // кадра, вызов сразу возвращается, а кадр пропускается
-    bool prepare_input(VIDEO_FRAME_INFO_S* ptr_frame);
+    // Свободен ли вход модели. Пока идет прогон или разбор предыдущего кадра, кадр
+    // для детекции пропускается: RGA в него не пишет, работа не тратится
+    bool is_input_free();
+    // Кадр уложен во вход — отдаем его в поток прогона
+    void submit_input();
 
     object_detect_result_list get_detections();
     uint32_t get_inference_count();
     static const char* get_class_name(const int cls_id);
 private:
-    static constexpr float BOX_THRESH = 0.25f;
-    static constexpr float NMS_THRESH = 0.45f;
-
     // Состояние буфера входа модели
     enum class input_state
     {
@@ -118,11 +124,19 @@ private:
         rknn_tensor_attr* input_attrs;
         rknn_tensor_attr* output_attrs;
         rknn_tensor_mem* input_mems[1];
-        rknn_tensor_mem* output_mems[3];
+        // Выходных тензоров столько, сколько голов у модели: их число узнается из
+        // атрибутов, поэтому здесь не массив фиксированной длины
+        std::vector<rknn_tensor_mem*> output_mems;
         rknn_dma_buf img_dma_buf;
         int model_channel;
         int model_width;
         int model_height;
+        // Форма голов модели: все три числа выводятся в init из самой модели и файлов
+        // рядом с ней, потому что описывают именно ее
+        int anchor_branch_num;
+        int anchor_per_branch;
+        int prop_box_size;
+        int class_num;
         bool is_quant;
     };
 
@@ -131,17 +145,18 @@ private:
     bool run();
     bool process_outputs();
     bool post_process(object_detect_result_list& detections);
+    // Разбор одной головы модели: раскладка NHWC, деквантование и декодирование боксов
+    int process_head(const int head, std::vector<float>& boxes, std::vector<float>& box_scores,
+                     std::vector<int>& class_ids);
     bool map_detections_to_frame(object_detect_result_list& detections);
 
     void worker();
 
     settings _settings;
 
-    rknn_context _ctx;
-    rknn_app_context_t _app_ctx;
-
-    // RGA-модуль, который готовит кадр под вход модели (принадлежит br_fsm)
-    br_rga* _ptr_rga = nullptr;
+    // Контекст модели обнуляется инициализатором: memset по нему нельзя, внутри вектор
+    rknn_context _ctx = 0;
+    rknn_app_context_t _app_ctx {};
 
     // Поток прогона модели и его связь с циклом
     std::thread _worker;

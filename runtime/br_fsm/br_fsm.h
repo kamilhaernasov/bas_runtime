@@ -44,28 +44,39 @@ class br_fsm
 public:
     struct settings
     {
+        // Ручек из config.ini
         uint16_t _width = 1920;
         uint16_t _height = 1080;
         // Размер входа модели: под него выделяется отдельный блок для NPU
         uint16_t _width_model = 640;
         uint16_t _height_model = 640;
-        uint8_t _mb_blk_count = 1;
-        float _bytes_per_pixel_out = 3;
-        float _bytes_per_pixel_in = 1.5;
         uint8_t _id_camera = 0;
         std::string _path_to_iq_dir = "/etc/iqfiles";
         std::string _path_to_model = "./model/yolov5.rknn";
+        std::string _path_to_labels = "./model/coco_80_labels_list.txt";
+        std::string _path_to_anchors = "./model/anchors_yolov5.txt";
+        float _box_thresh = 0.25f;
+        float _nms_thresh = 0.45f;
+        br_venc::codec _codec = br_venc::codec::H264;
+        uint16_t _venc_gop = 30;
+        // 0 — рассчитать битрейт от разрешения кадра
+        uint32_t _venc_bitrate = 0;
+        uint16_t _rtsp_port = 554;
+        std::string _rtsp_path = "/live/0";
+        // Параметры связки VI/RGA/VENC: это не ручки, а константы пайплайна
+        uint8_t _mb_blk_count = 1;
+        float _bytes_per_pixel_out = 3;
+        float _bytes_per_pixel_in = 1.5;
         PIXEL_FORMAT_E _pixel_format_in = RK_FMT_YUV420SP;
         _Rga_SURF_FORMAT _pixel_format_in_rga = RK_FORMAT_YCbCr_420_SP;
         _Rga_SURF_FORMAT _pixel_format_out_rga = RK_FORMAT_RGB_888;
         PIXEL_FORMAT_E _pixel_format_out = RK_FMT_RGB888;
-        br_venc::codec _codec = br_venc::codec::H264;
-        uint8_t _venc_gop = 30;
     };
 
     explicit br_fsm();
     ~br_fsm();
 
+    void set_settings(const settings settings);
     bool init();
     bool start();
     bool release();
