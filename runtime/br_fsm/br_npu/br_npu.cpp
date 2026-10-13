@@ -200,6 +200,7 @@ namespace
         // obj_probs:   [0.9, 0.7, 0.5, 0.3]
         // index_array:  [1,   3,   2,   0  ]
     // поменять на std::sort 
+    // поменять плоские массивы на структуру
     int quick_sort_indice_inverse(std::vector<float>& input, int left, int right, std::vector<int>& indices)
     {
         float key;
