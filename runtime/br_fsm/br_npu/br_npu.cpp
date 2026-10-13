@@ -8,37 +8,39 @@
 #include <string>
 #include <vector>
 
-// Ниже порт postprocess.cc из примера luckfox_pico_rtsp_yolov5: деквантование выходных
-// тензоров, разбор боксов и NMS. Наружу из модуля ничего не торчит, все внутренности
-// доступны только методам br_npu.
+
 namespace
 {
-    // Сколько значений выходного тензора приходится на один бокс помимо оценок классов:
-    // четыре координаты и уверенность объекта. Это формат головы YOLOv5, а не свойство
-    // модели: тензор отдает только общее число каналов, где в них кончаются координаты,
-    // знает только сам алгоритм разбора (см. индексы hw_ptr ниже)
+    // Сколько значений отдает модель на каждого кандидата в детектированный объект (под каждую ячейку сетки и каждого якоря внутри него)
+    // 4 + 1, где 4 - координаты бокса с объектом, 1 - уверенность, что объект есть
+    // Координаты бокса в формате: x, y, w, h, где x, y - координаты центра бокса, w, h - ширина и высота бокса
     constexpr int BOX_AND_CONF_SIZE = 5;
 
-    // Названия классов и якоря голов — свойства конкретной модели, поэтому лежат
-    // в файлах рядом с ней и читаются в init
     std::vector<std::string> labels;
+    // Якоря модели
+    // YOLOv5 выход модели работает так:
+    // Нейросеть делит исходную картинку (входящий единственный тензор) на сетку, допустим 40х40, - 40 полос по горизонтали и по вертикали. 40х40 - шаг сетки. На выходных тензорах как раз эти вот ячейки с разным шагом (для v5 3 таких масштаба) и с информацией об детекции.
+    // Также вместо предсказания рамки детекции с нуля, используются якоря.
+    // Якоря - заранее заданные из обучения прямоугольники эталоны разных размеров и пропорций, подходящие под типичные объекты из датасета обучения на данном масштабе.
+    // Якоря используются для оптимизации предсказания рамки детекции. Все выходные координаты детекции считаются относительно якорей.
     std::vector<float> anchors;
 
-    int clamp_value(float val, int min, int max) { return val > min ? (val < max ? val : max) : min; }
+    // Ограничение значения в диапазоне [min, max].
+    // Если val < min = min
+    // Если val > max = max
+    // Иначе val без дробной части
+    int32_t clamp_value(float val, int32_t min, int32_t max) { return val > min ? (val < max ? val : max) : min; }
 
-    int32_t clip_value(float val, float min, float max)
-    {
-        float f = val <= min ? min : (val >= max ? max : val);
-        return f;
-    }
-
+    // Квантование float32 в int8
+    // scale - масштабирование, zp - смещение (zero point)
     int8_t qnt_f32_to_affine(float f32, int32_t zp, float scale)
     {
         float dst_val = (f32 / scale) + zp;
-        return (int8_t)clip_value(dst_val, -128, 127);
+        return static_cast<int8_t>(clamp_value(dst_val, -128, 127));
     }
 
-    float deqnt_affine_to_f32(int8_t qnt, int32_t zp, float scale) { return ((float)qnt - (float)zp) * scale; }
+    // Деквантование int8 в float32
+    float deqnt_affine_to_f32(int8_t qnt, int32_t zp, float scale) { return (static_cast<float>(qnt) - static_cast<float>(zp)) * scale; }
 
     // Файл меток: по названию класса в строке, число строк задает число классов модели
     bool load_labels(const std::string& path)
@@ -104,6 +106,12 @@ namespace
         return !anchors.empty();
     }
 
+    // Расчет коэффициента пересечения двух боксов (IoU)
+    // IoU = площадь_пересечения / площадь_объединения
+    // Площадь пересечения — это площадь той области, где прямоугольники накладываются.
+    // Площадь объединения — это площадь всей области, которую занимают оба прямоугольника вместе (без двойного счёта общей части).
+    // xmin, ymin — левый верхний угол.
+    // xmax, ymax — правый нижний угол.
     float calculate_overlap(float xmin0, float ymin0, float xmax0, float ymax0,
                             float xmin1, float ymin1, float xmax1, float ymax1)
     {
@@ -114,35 +122,61 @@ namespace
         return u <= 0.f ? 0.f : (i / u);
     }
 
+    // NMS - подавление дубликатов детекций одного объекта.
+    // valid_count — сколько всего боксов-кандидатов мы нашли (после порога уверенности).
+    // output_locations — координаты всех боксов-кандидатов.
+    // class_ids — классы детекции всех боксов-кандидатов.
+    // order - массив индексов, отсортированный по убыванию уверенности. order[0] — индекс самого уверенного бокса, order[1] — второго по уверенности, и т.д. Этот массив изменяется функцией: боксы, которые надо выбросить, помечаются как -1
+    // filter_id — номер класса, с которым сейчас работаем. Функция обрабатывает только боксы этого класса, чтобы не выкидывать детекции других классов.
+    // threshold — порог IoU. Если два бокса пересекаются сильнее этого порога, один из них выбрасывается.
+
+    // Важно: 
+    // output_locations - хранит боксы в исходном порядке.
+    // order - хранит индексы этих боксов, переставленные по убыванию уверенности.
+    // Например:
+    //
+    // output_locations ([x, y, w, h]):
+        // бокс 0: [100, 100, 50, 50]
+        // бокс 1: [102, 101, 48, 52]
+        // бокс 2: [500, 500, 80, 80]
+    // order (после сортировки):
+        // [2, 0, 1]   — то есть сначала самый уверенный (бокс 2), потом бокс 0, потом бокс 1
+    //
     int nms(const int valid_count, const std::vector<float>& output_locations, const std::vector<int>& class_ids,
             std::vector<int>& order, const int filter_id, const float threshold)
     {
+        // Проходим по всем боксам-кандидатам в порядке убывания уверенности (по индексу в order).
         for (int i = 0; i < valid_count; ++i)
         {
-            if (order[i] == -1 || class_ids[i] != filter_id)
+            // Если текущий бокс помечен под выброс (-1) или класс не тот, который мы сейчас обрабатываем, пропускаем его
+            if (order[i] == -1 || class_ids[order[i]] != filter_id) 
             {
                 continue;
             }
-            int n = order[i];
+            int n = order[i]; // Индекс самого бокса из output_locations
+            // Достаем координаты исходного бокса n из output_locations
+            float xmin0 = output_locations[n * 4 + 0];
+            float ymin0 = output_locations[n * 4 + 1];
+            float xmax0 = output_locations[n * 4 + 0] + output_locations[n * 4 + 2];
+            float ymax0 = output_locations[n * 4 + 1] + output_locations[n * 4 + 3];
+            // Сравниваем его с каждым последующим боксом в списке 
             for (int j = i + 1; j < valid_count; ++j)
             {
+                // Получаем индекс следующего бокса из output_locations
                 int m = order[j];
-                if (m == -1 || class_ids[i] != filter_id)
+                // Если этот бокс уже помечен под выброс или класс не совпадает с filter_id, пропускаем его
+                if (m == -1 || class_ids[order[j]] != filter_id)
                 {
                     continue;
                 }
-                float xmin0 = output_locations[n * 4 + 0];
-                float ymin0 = output_locations[n * 4 + 1];
-                float xmax0 = output_locations[n * 4 + 0] + output_locations[n * 4 + 2];
-                float ymax0 = output_locations[n * 4 + 1] + output_locations[n * 4 + 3];
-
+                // Достаем координаты следующего бокса m из output_locations
                 float xmin1 = output_locations[m * 4 + 0];
                 float ymin1 = output_locations[m * 4 + 1];
                 float xmax1 = output_locations[m * 4 + 0] + output_locations[m * 4 + 2];
                 float ymax1 = output_locations[m * 4 + 1] + output_locations[m * 4 + 3];
-
+                // Считаем IoU (коэффициент пересечения) между текущим боксом n и следующим боксом m
                 float iou = calculate_overlap(xmin0, ymin0, xmax0, ymax0, xmin1, ymin1, xmax1, ymax1);
-
+                // Если IoU больше порога, помечаем следующий бокс m под выброс (-1)
                 if (iou > threshold)
                 {
                     order[j] = -1;
@@ -152,6 +186,20 @@ namespace
         return 0;
     }
 
+    // Быстрая сортировка по убыванию.
+    // input - уверенности всех найденных боксов детекции.
+    // left — левая граница сортируемого куска (включительно).
+    // right — правая граница (включительно).
+    // indices - индексы исходных боксов из массива.
+    // Переставляет input по убыванию и одновременно переставляет индексы в indices, чтобы сохранить соответствие.
+    // Пример:
+    // До сортировки:
+        // obj_probs:   [0.3, 0.9, 0.5, 0.7]
+        // index_array:  [0,   1,   2,   3  ]
+    // После сортировки:
+        // obj_probs:   [0.9, 0.7, 0.5, 0.3]
+        // index_array:  [1,   3,   2,   0  ]
+    // поменять на std::sort 
     int quick_sort_indice_inverse(std::vector<float>& input, int left, int right, std::vector<int>& indices)
     {
         float key;
