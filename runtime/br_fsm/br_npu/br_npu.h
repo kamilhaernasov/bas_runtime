@@ -1,32 +1,41 @@
-#pragma once
+﻿#pragma once
 
-/**
- * @file br_npu.h
- * @author khaernasov-ka
- * @brief Модуль инференса на NPU.
- * @version 0.1
- * @date 2026-10-12
- * 
- * NPU на этом камне работает через RKNN API:
- * ├── rknn_init       - загрузка модели .rknn и создание контекста
- * ├── rknn_query      - запрос атрибутов входных и выходных тензоров модели
- * ├── rknn_create_mem - выделение памяти под тензор
- * ├── rknn_set_io_mem - привязка памяти тензора (zero-copy: без промежуточных копий)
- * └── rknn_run        - прогон модели
- * 
- * Кадр с VI (YUV420SP) упаковывается под вход модели на RGA: кадр вписывается во вход
- * с сохранением пропорций, поля заливаются цветом, с которым обучалась модель. Буфер под
- * вход модели и сам проход RGA — в br_rga, модуль его только просит о подготовке кадра.
- * Прогон модели и разбор ее выходов идут в отдельном потоке, поэтому цикл обработки кадров
- * не ждет NPU: если вход занят прогоном, кадр для детекции просто пропускается.
- * 
- */
+/*
+br_npu — модуль инференса на NPU.
+
+Конвеер выглядит как-то так:
+1. Кадр приходит от RGA в съедобном формате для модели.
+2. Выполняется инференс по конкретной реализации модели.
+3. Выходные тензоры проходят по пост-обработке в классе конкретной модели.
+4. Результат готовых детекций отдается обратно в FSM.
+
+Более подробно:
+0. Начинается все c проверки, что NPU уже не занят обработкой. Функция - is_input_free
+    1. Если занято:
+        1.0. Кадр пропускается
+    2. Не занято:
+        2.0. RGA конвертирует кадр в формат под модель.
+        2.1. Кадр кладется в отдельных блок памяти под вход модели
+        2.1. Вызов submit_input
+        2.2. Поток инференса просыпается 
+        2.3. Поток инференса проверяет, не нужно ли завершиться по release
+            2.3.1. Если нужно завершиться:
+                3. Выход из потока
+            2.3.2. Если не нужно завершаться:
+                4. Запуск инференса модели
+                    4.1. Синхронизация памяти RGA и NPU
+                    4.2. Запуск инференса
+                    4.3. Сборка выходных тензоров
+                    4.4. Передача выходных тензоров в разбор модели
+                    4.5. Получение детекций сразу в координатах исходного кадра
+
+Все кишки детекций, фильтров, конвертации - в конкретной реализации модели. 
+*/
 
 #include <condition_variable>
 #include <cstdint>
 #include <cstring>
 #include <mutex>
-#include <string>
 #include <thread>
 #include <vector>
 
@@ -37,136 +46,122 @@ extern "C"
     #include "rknn_api.h"
 };
 
+#include "br_model.h"
+
 class br_npu
 {
 public:
-    struct settings
-    {
-        uint16_t _width;
-        uint16_t _height;
-        std::string _model_path;
-        std::string _path_to_labels;
-        std::string _path_to_anchors;
-        float _box_thresh;
-        float _nms_thresh;
-        // Сколько рамок детекции помещается в кадр
-        int _max_detections;
-        // Геометрия вписывания кадра во вход модели. Считает ее RGA: он и укладывает
-        // кадр во вход, а NPU по ней возвращает боксы в координаты кадра
-        float _scale;
-        uint16_t _pad_x;
-        uint16_t _pad_y;
-    };
-
-    struct image_rect_t
-    {
-        int left;
-        int top;
-        int right;
-        int bottom;
-    };
-
-    struct object_detect_result
-    {
-        image_rect_t box;
-        float prop;
-        int cls_id;
-    };
-
-    struct object_detect_result_list
-    {
-        int id;
-        int count;
-        // Размер списка задает настройка _max_detections
-        std::vector<object_detect_result> results;
-    };
-
     explicit br_npu();
     ~br_npu();
 
-    // ptr_blk — блок под вход модели: в него кадр укладывает RGA, его же читает NPU
-    bool init(MB_BLK ptr_blk);
-    bool release();
-    void set_settings(const settings settings);
+    /*
+    ptr_blk - блок памяти под вход модели. 
+    ptr_model - указатель на конкретную реализацию модели. 
 
-    // Свободен ли вход модели. Пока идет прогон или разбор предыдущего кадра, кадр
-    // для детекции пропускается: RGA в него не пишет, работа не тратится
+    Инициализирует контекст NPU, загружает модель и стартует поток инференса.
+    */
+    bool init(MB_BLK ptr_blk, br_model* ptr_model);
+
+    /*
+    Освобождает ресурсы NPU и все связанные буфера.
+    */
+    bool release();
+
+    /*
+    Свободен ли вход модели или уже идет детекция и NPU занят.
+    */
     bool is_input_free();
-    // Кадр уложен во вход — отдаем его в поток прогона
+
+    /*2
+    Подтверждение, что блок памяти под NPU заполнен новым валидным кадром.
+    */
     void submit_input();
 
-    object_detect_result_list get_detections();
+    /*
+    Возвращает список обнаруженных объектов с последнего кадра.
+    */
+    br_model::detection_list get_detections();
+
+    /*
+    Возвращает количество выполненных инференсов кадров с момента старта.
+    */
     uint32_t get_inference_count();
-    static const char* get_class_name(const int cls_id);
 private:
-    // Состояние буфера входа модели
+    /*
+    Состояние конечного автомата потока инференса.
+    */
     enum class input_state
     {
-        free,   // свободен, цикл может заполнять
-        ready,  // заполнен, ждет прогона
-        busy    // идет прогон и разбор
+        free,   // NPU свободен, можно кидать кадр
+        ready,  // NPU получил кадр, ждет прогон
+        busy    // NPU прогоняет кадр
     };
 
-    // Буфер DMA, которым NPU обменивается с внешней памятью
-    struct rknn_dma_buf
-    {
-        char* dma_buf_virt_addr;
-        int dma_buf_fd;
-        int size;
-    };
-
-    // Контекст модели. Повторяет структуру из примера
-    // luckfox_pico_rtsp_yolov5, но является собственной: SDK-шный yolov5.h не тянем.
+    /*
+    Контекст модели. 
+    */
     struct rknn_app_context_t
     {
-        rknn_context rknn_ctx;
-        rknn_input_output_num io_num;
-        rknn_tensor_attr* input_attrs;
-        rknn_tensor_attr* output_attrs;
-        // Входных и выходных тензоров столько, сколько их у модели: числа узнаются из
-        // атрибутов, поэтому здесь не массивы фиксированной длины
-        std::vector<rknn_tensor_mem*> input_mems;
-        std::vector<rknn_tensor_mem*> output_mems;
-        rknn_dma_buf img_dma_buf;
-        int model_channel;
-        int model_width;
-        int model_height;
-        // Форма голов модели: все три числа выводятся в init из самой модели и файлов
-        // рядом с ней, потому что описывают именно ее
-        int anchor_branch_num;
-        int anchor_per_branch;
-        int prop_box_size;
-        int class_num;
-        bool is_quant;
+        rknn_context rknn_ctx; // хэндл rknn контекста модели
+        rknn_input_output_num io_num; // сколько входов и выходов у модели (тензоров)
+        rknn_tensor_attr* input_attrs; // атрибуты входных тензоров модели
+        rknn_tensor_attr* output_attrs; // атрибуты выходных тензоров модели
+        std::vector<rknn_tensor_mem*> input_mems; // память входных тензоров
+        std::vector<rknn_tensor_mem*> output_mems; // память выходных тензоров
+        int model_channel; // число каналов во входе модели (3 для RGB)
+        int model_width; // ширина входа модели
+        int model_height; // высота входа модели
+        bool is_quant; // флаг квантования модели, сделано или отдает во float 
     };
 
+    /*
+    Выводит информацию об атрибутах тензора.
+    Взял из примера, пока оставил.
+    */
     static void dump_tensor_attr(const rknn_tensor_attr* ptr_attr);
 
-    bool run();
-    bool process_outputs();
-    bool post_process(object_detect_result_list& detections);
-    // Разбор одной головы модели: раскладка NHWC, деквантование и декодирование боксов
-    int process_head(const int head, std::vector<float>& boxes, std::vector<float>& box_scores,
-                     std::vector<int>& class_ids);
-    bool map_detections_to_frame(object_detect_result_list& detections);
+    /* 
+    Собирает выходные тензоры прогона в том виде, в котором их ждет пост-процессинг модели
+    */
+    std::vector<br_model::tensor> collect_outputs() const;
 
+    /*
+    Запуск инференса.
+    */
+    bool run();
+
+    /*
+    Обработка результатов инференса: сырые выходные тензоры уходят на пост-процессинг.
+    */
+    bool process_outputs();
+
+    /*
+    Поток инференса
+    */
     void worker();
 
-    settings _settings;
-
-    // Контекст модели обнуляется инициализатором: memset по нему нельзя, внутри вектор
-    rknn_context _ctx = 0;
+    /*
+    Зачем вы это читаете?
+    Контекст всей модели. Пример из SDK зачем-то использовал отдельную переменную под хэндл rknn_context, выкинул.
+    */
     rknn_app_context_t _app_ctx {};
 
-    // Поток прогона модели и его связь с циклом
+    // Указатель на конкретную реализацию модели, которая знает, как делать пост-процессинг выходных тензоров.
+    br_model* _ptr_model = nullptr;
+
+    /*
+    Конечный автомат потока инференса, думаю, понятно.
+    */
     std::thread _worker;
     std::mutex _mtx;
     std::condition_variable _cv;
     input_state _input_state = input_state::free;
     bool _stop = false;
 
-    // Результаты детекции в координатах кадра и их защита
+    /*
+    Результаты инференса: детекции и счетчик успешных прогонов кадров.
+    */
     std::mutex _mtx_detections;
-    object_detect_result_list _detections {};
+    br_model::detection_list _detections;
     uint32_t _inference_count = 0;
 };

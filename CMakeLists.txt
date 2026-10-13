@@ -19,6 +19,8 @@
 #
 # Запуск сборки (из директории с CMakeLists.txt):
 # cmake -S . -B build && cmake --build build && cmake --install build
+# Дебаг:
+# cmake -S . -B build -DDEBUG_FRAME=ON && cmake --build build && cmake --install build
 
 
 cmake_minimum_required(VERSION 3.21)
@@ -58,6 +60,8 @@ add_executable(${PROJECT_NAME}
     ${CMAKE_SOURCE_DIR}/runtime/br_fsm/br_rtsp/br_rtsp.cpp
     ${CMAKE_SOURCE_DIR}/runtime/br_fsm/br_rga/br_rga.cpp
     ${CMAKE_SOURCE_DIR}/runtime/br_fsm/br_npu/br_npu.cpp
+    ${CMAKE_SOURCE_DIR}/runtime/br_fsm/br_model/br_model.cpp
+    ${CMAKE_SOURCE_DIR}/runtime/br_fsm/br_model/br_model_yolo.cpp
 )
 
 # ---- Libs ----
@@ -65,6 +69,15 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
     RV1106_1103
     BAS_RUNTIME_VERSION="${PROJECT_VERSION}"
 )
+
+# ---- Debug ----
+# Отладка кадров: под определением debug_frame печатается строка на каждый кадр.
+# Ручка выключена по умолчанию, включается ключом -DDEBUG_FRAME=ON
+option(DEBUG_FRAME "Print per-frame debug: stage times and detection count" OFF)
+if (DEBUG_FRAME)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE debug_frame)
+endif()
+
 target_link_directories(${PROJECT_NAME} PRIVATE
     "${SDK_PATH}/dependencies/lib/uclibc"
 )
@@ -123,6 +136,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_SOURCE_DIR}/runtime/br_fsm/br_rtsp     
     ${CMAKE_SOURCE_DIR}/runtime/br_fsm/br_rga     
     ${CMAKE_SOURCE_DIR}/runtime/br_fsm/br_npu                          
+    ${CMAKE_SOURCE_DIR}/runtime/br_fsm/br_model
     ${OpenCV_INCLUDE_DIRS}
     ${CMAKE_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/utils
@@ -143,5 +157,6 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 )
 
 install(TARGETS ${PROJECT_NAME} DESTINATION .)
-# Конфиг читается из рабочего каталога, поэтому кладем его рядом с бинарником
+# Конфиги читаются из рабочего каталога, поэтому кладем их рядом с бинарником
 install(FILES ${CMAKE_SOURCE_DIR}/config.ini DESTINATION .)
+install(FILES ${CMAKE_SOURCE_DIR}/model.ini DESTINATION .)

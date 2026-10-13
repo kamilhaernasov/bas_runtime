@@ -120,25 +120,39 @@ bool br_fsm::init()
     };
     printf("%s: _rtsp.init: ok\n", __PRETTY_FUNCTION__);
 
-    // NPU
-    br_npu::settings npu_settings
+    // Модель: разбор ее выходов создается по типу из конфига модели
+    _model = br_model_create(_settings._model_type);
+    if (_model == nullptr)
     {
-        ._width = _settings._width,
-        ._height = _settings._height,
-        ._model_path = _settings._path_to_model,
-        ._path_to_labels = _settings._path_to_labels,
-        ._path_to_anchors = _settings._path_to_anchors,
+        return false;
+    }
+
+    br_model::settings model_settings
+    {
+        // Файл модели и размер ее входа: у модели их спрашивает br_npu, когда создает
+        // контекст NPU и сверяет с ними блок кадра
+        ._path_to_model = _settings._path_to_model,
+        ._width_model = _settings._width_model,
+        ._height_model = _settings._height_model,
         ._box_thresh = _settings._box_thresh,
         ._nms_thresh = _settings._nms_thresh,
         ._max_detections = _settings._max_detections,
-        // Геометрию вписывания кадра во вход модели задает RGA, который и укладывает кадр
+        // Файлы меток и якорей лежат рядом с моделью: их читает сама реализация разбора
+        ._path_to_labels = _settings._path_to_labels,
+        ._path_to_anchors = _settings._path_to_anchors,
+        // Размер кадра и геометрию вписывания задает RGA, который и укладывает кадр:
+        // по ним разбор возвращает рамки из пространства модели в координаты кадра
+        ._width = _settings._width,
+        ._height = _settings._height,
         ._scale = _brga.get_scale(),
         ._pad_x = _brga.get_pad_x(),
         ._pad_y = _brga.get_pad_y(),
     };
-    _npu.set_settings(npu_settings);
-    // Блок под вход модели: в него пишет RGA, из него читает NPU
-    if (!_npu.init(_mb_pool_npu.get_mb_blk(0)))
+    _model->set_settings(model_settings);
+
+    // Блок под вход модели и разбор ее выходов: в блок пишет RGA, из него читает NPU.
+    // Свои настройки (файл модели и размер входа) NPU берет у самой модели
+    if (!_npu.init(_mb_pool_npu.get_mb_blk(0), _model.get()))
     {
         return false;
     };
@@ -153,18 +167,20 @@ bool br_fsm::start()
     while(1)
     {
         is_failed = false;
+        // Времена стадий этого кадра: та же дельта уходит и в накопление за окно (print_fps)
+        stage_stats frame_us;
         // Получаем фрейм с VI
         if (!_vi.receive_frame_from_channel())
         {
             is_failed = true;
         }
-        _stage_us.vi += take_stage_time();
+        _stage_us.vi += (frame_us.vi = take_stage_time());
         // Обработка в RGA
         if (!is_failed && !_brga.process_frame(_vi.get_last_frame()))
         {
             is_failed = true;
         };
-        _stage_us.rga += take_stage_time();
+        _stage_us.rga += (frame_us.rga = take_stage_time());
         // Получаем указатель на фрейм после rga
         void* frame_after_brga = _mb_pool.get_ptr_from_mb_blk(_mb_pool.get_mb_blk(0));
         if (!is_failed && frame_after_brga == nullptr)
@@ -185,19 +201,19 @@ bool br_fsm::start()
                 _npu.submit_input();
             }
         }
-        _stage_us.npu += take_stage_time();
+        _stage_us.npu += (frame_us.npu = take_stage_time());
         // Рисуем рамки по последнему готовому результату детекции
         if (!is_failed && !draw_detections(frame_after_brga))
         {
             is_failed = true;
         }
-        _stage_us.draw += take_stage_time();
+        _stage_us.draw += (frame_us.draw = take_stage_time());
         // Сбрасываем кэш, иначе мерцает open-cv
         if (!is_failed && !_mb_pool.mmz_flush_cache(0))
         {
             is_failed = true;
         }
-        _stage_us.flush += take_stage_time();
+        _stage_us.flush += (frame_us.flush = take_stage_time());
         // Отправляем rga frame в venc (кадр уже в mb блоке, с которым работал rga)
         if (!is_failed && !_venc.prepare_frame())
         {
@@ -208,7 +224,7 @@ bool br_fsm::start()
         {
             is_failed = true;
         }
-        _stage_us.venc += take_stage_time();
+        _stage_us.venc += (frame_us.venc = take_stage_time());
         // Отправляем в rtsp
         if (!is_failed && !_rtsp.process_frame(
             reinterpret_cast<uint8_t*>(_mb_pool.get_ptr_from_mb_blk(_venc.get_codec_frame()->pstPack->pMbBlk)), 
@@ -218,7 +234,7 @@ bool br_fsm::start()
         {
             is_failed = true;
         }
-        _stage_us.rtsp += take_stage_time();
+        _stage_us.rtsp += (frame_us.rtsp = take_stage_time());
         // Очищаем 
         _vi.release_frame();
         _venc.release_codec_frame();
@@ -226,6 +242,8 @@ bool br_fsm::start()
         take_stage_time();
         // Раз в секунду печатаем FPS и средние времена стадий
         print_fps();
+        // Печатается только под debug_frame: времена стадий этого кадра и число детекций
+        print_frame_debug(frame_us);
     }
 
     return true;
@@ -235,6 +253,8 @@ bool br_fsm::start()
  {
     // Сначала отпускаем всех, кто держит блоки кадра, и только потом сами пулы
     _npu.release();
+    // Разбор модели больше не нужен: NPU уже остановлен
+    _model.reset();
     _rtsp.release();
     _venc.release();
     _brga.release();
@@ -249,28 +269,26 @@ bool br_fsm::start()
 
 bool br_fsm::draw_detections(void* ptr_frame)
 {
-    br_npu::object_detect_result_list detections = _npu.get_detections();
+    br_model::detection_list detections = _npu.get_detections();
 
     // Кадр после RGA лежит в формате RGB888
     cv::Mat frame(cv::Size(_settings._width, _settings._height), CV_8UC3, ptr_frame);
 
-    for (int i = 0; i < detections.count; i++)
+    for (const br_model::detection& result : detections)
     {
-        br_npu::object_detect_result* ptr_result = &(detections.results[i]);
-
         printf("%s @ (%d %d %d %d) %.3f\n",
-               br_npu::get_class_name(ptr_result->cls_id),
-               ptr_result->box.left, ptr_result->box.top, ptr_result->box.right, ptr_result->box.bottom,
-               ptr_result->prop);
+               _model->get_class_name(result.cls_id),
+               result.box.left, result.box.top, result.box.right, result.box.bottom,
+               result.prop);
 
         cv::rectangle(frame,
-                      cv::Point(ptr_result->box.left, ptr_result->box.top),
-                      cv::Point(ptr_result->box.right, ptr_result->box.bottom),
+                      cv::Point(result.box.left, result.box.top),
+                      cv::Point(result.box.right, result.box.bottom),
                       cv::Scalar(0, 255, 0), 3);
 
         char text[64];
-        sprintf(text, "%s %.1f%%", br_npu::get_class_name(ptr_result->cls_id), ptr_result->prop * 100);
-        cv::putText(frame, text, cv::Point(ptr_result->box.left, ptr_result->box.top - 8),
+        sprintf(text, "%s %.1f%%", _model->get_class_name(result.cls_id), result.prop * 100);
+        cv::putText(frame, text, cv::Point(result.box.left, result.box.top - 8),
                     cv::FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(0, 255, 0), 2);
     }
 
@@ -332,4 +350,22 @@ void br_fsm::print_fps()
     _stage_us = stage_stats();
     _fps_frames = 0;
     _fps_start_time_us = now_us;
+}
+
+void br_fsm::print_frame_debug(const stage_stats& frame_us)
+{
+#ifdef debug_frame
+    // Сколько рамок пришло с последнего готового прогона: их же рисует draw_detections
+    const uint32_t detection_count = (uint32_t)_npu.get_detections().size();
+
+    printf("[frame] vi %.2f | rga %.2f | npu %.2f | draw %.2f | flush %.2f | venc %.2f | rtsp %.2f ms | det %u\n",
+           (double)frame_us.vi / 1000.0,
+           (double)frame_us.rga / 1000.0,
+           (double)frame_us.npu / 1000.0,
+           (double)frame_us.draw / 1000.0,
+           (double)frame_us.flush / 1000.0,
+           (double)frame_us.venc / 1000.0,
+           (double)frame_us.rtsp / 1000.0,
+           detection_count);
+#endif
 }

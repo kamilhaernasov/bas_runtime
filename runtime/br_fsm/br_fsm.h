@@ -20,6 +20,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <memory>
 
 extern "C"
 {
@@ -38,6 +39,7 @@ extern "C"
 #include "br_venc.h"
 #include "br_rtsp.h"
 #include "br_npu.h"
+#include "br_model.h"
 
 class br_fsm 
 {
@@ -47,24 +49,27 @@ public:
         // Ручек из config.ini
         uint16_t _width = 1920;
         uint16_t _height = 1080;
-        // Размер входа модели: под него выделяется отдельный блок для NPU
-        uint16_t _width_model = 640;
-        uint16_t _height_model = 640;
         uint8_t _id_camera = 0;
         std::string _path_to_iq_dir = "/etc/iqfiles";
-        std::string _path_to_model = "./model/yolov5.rknn";
-        std::string _path_to_labels = "./model/coco_80_labels_list.txt";
-        std::string _path_to_anchors = "./model/anchors_yolov5.txt";
-        float _box_thresh = 0.25f;
-        float _nms_thresh = 0.45f;
-        // Максимальное количество рамок детекции на кадр
-        int _max_detections = 128;
         br_venc::codec _codec = br_venc::codec::H264;
         uint16_t _venc_gop = 30;
         // 0 — рассчитать битрейт от разрешения кадра
         uint32_t _venc_bitrate = 0;
         uint16_t _rtsp_port = 554;
         std::string _rtsp_path = "/live/0";
+        // Ручек из model.ini
+        // Тип модели: выбирает реализацию разбора выходов
+        std::string _model_type = "yolov5";
+        std::string _path_to_model = "./model/yolov5.rknn";
+        std::string _path_to_labels = "./model/coco_80_labels_list.txt";
+        std::string _path_to_anchors = "./model/anchors_yolov5.txt";
+        // Размер входа модели: под него выделяется отдельный блок для NPU
+        uint16_t _width_model = 640;
+        uint16_t _height_model = 640;
+        float _box_thresh = 0.25f;
+        float _nms_thresh = 0.45f;
+        // Максимальное количество рамок детекции на кадр
+        int _max_detections = 128;
         // Параметры связки VI/RGA/VENC: это не ручки, а константы пайплайна
         uint8_t _mb_blk_count = 1;
         float _bytes_per_pixel_out = 3;
@@ -103,6 +108,9 @@ private:
 
     bool draw_detections(void* ptr_frame);
     void print_fps();
+    // Отладка кадров: времена стадий текущего кадра и число детекций.
+    // Печатает только под определением debug_frame (см. DEBUG_FRAME в CMakeLists)
+    void print_frame_debug(const stage_stats& frame_us);
     uint64_t get_current_time_us() const;
     uint64_t take_stage_time();
 
@@ -118,5 +126,7 @@ private:
     br_rga _brga;
     br_venc _venc;
     br_rtsp _rtsp;
+    // Разбор выходов модели: создается по типу из конфига, br_npu только вызывает его методы
+    std::unique_ptr<br_model> _model;
     br_npu _npu;
 };
