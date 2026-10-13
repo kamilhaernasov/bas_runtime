@@ -100,7 +100,7 @@ bool br_model_yolo::load_anchors(const std::string& path)
     return !_anchors.empty();
 }
 
-bool br_model_yolo::init(const model_info& model_info)
+bool br_model_yolo::setup(const model_info& model_info)
 {
     // Разбор работает с целочисленными выходами: RV1106 в zero-copy отдает только i8
     if (!model_info._is_quant)
@@ -155,8 +155,9 @@ bool br_model_yolo::init(const model_info& model_info)
     }
     _anchor_per_branch = anchor_count / _head_count;
 
-    // Каналы выхода: на каждую ячейку сетки по prop_box_size значений на каждый якорь
-    const int channels = (int)model_info._outputs[0]._dims[model_info._outputs[0]._n_dims - 1];
+    // Каналы выхода: на каждую ячейку сетки по prop_box_size значений на каждый якорь.
+    // Тензоры уже собраны базой из атрибутов модели, здесь берется форма первой головы
+    const int channels = (int)_tensors[0]._dims[_tensors[0]._n_dims - 1];
     if (channels % _anchor_per_branch != 0)
     {
         printf("%s: output channels %d do not match anchors per head %d!\n",
@@ -182,15 +183,16 @@ bool br_model_yolo::init(const model_info& model_info)
     return true;
 }
 
-bool br_model_yolo::process(const tensor* outputs, const int output_count, detection_list& detections)
+bool br_model_yolo::process(detection_list& detections)
 {
     detections.clear();
 
-    // Кандидаты со всех голов лежат в одном списке: дубликаты между головами тоже возможны
+    // Кандидаты со всех голов лежат в одном списке: дубликаты между головами тоже возможны.
+    // Описатели голов собраны в init: на каждом прогоне меняется только содержимое их памяти
     std::vector<box> boxes;
-    for (int head = 0; head < output_count; head++)
+    for (int head = 0; head < (int)_tensors.size(); head++)
     {
-        process_head(outputs[head], head, boxes);
+        process_head(_tensors[head], head, boxes);
     }
 
     // Ничего не нашли
