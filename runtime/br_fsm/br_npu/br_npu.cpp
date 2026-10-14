@@ -209,20 +209,21 @@ bool br_npu::init(MB_BLK ptr_blk, br_model* ptr_model)
     _app_ctx.output_attrs = (rknn_tensor_attr *)malloc(io_num.n_output * sizeof(rknn_tensor_attr));
     memcpy(_app_ctx.output_attrs, output_attrs, io_num.n_output * sizeof(rknn_tensor_attr));
 
-    // Выходные тензоры собирает сама модель: ей для этого отдается все, что нужно —
-    // атрибуты тензоров и память, выделенная под них. Разбору виднее, что он будет читать
+    // Собираем сопроводительную информацию для модели
     const br_model::model_info model_info
     {
-        ._input_width = _app_ctx.model_width,
-        ._input_height = _app_ctx.model_height,
-        ._input_channels = _app_ctx.model_channel,
-        ._is_quant = _app_ctx.is_quant,
-        ._output_attrs = _app_ctx.output_attrs,
-        ._output_mems = _app_ctx.output_mems.data(),
-        ._output_count = (int)_app_ctx.output_mems.size(),
+        ._input_width = _app_ctx.model_width, // Ширина входа модели по факту от самой модели
+        ._input_height = _app_ctx.model_height, // Высота входа модели по факту от самой модели
+        ._input_channels = _app_ctx.model_channel, // Кол-во каналов во входе модели
+        ._is_quant = _app_ctx.is_quant, // Флаг, что модель по факту квантованная
+        ._output_attrs = _app_ctx.output_attrs, // Атрибуты выходных тензоров модели
+        ._output_mems = _app_ctx.output_mems.data(), // Память выходных тензоров модели
+        ._output_count = _app_ctx.output_mems.size(), // Кол-во выходных тензоров модели
     };
+    // Пытаемся инициализировать модель
     if (!_ptr_model->init(model_info))
     {
+        printf("%s: can't init model!\n", __PRETTY_FUNCTION__);
         return false;
     }
 
@@ -237,8 +238,6 @@ bool br_npu::init(MB_BLK ptr_blk, br_model* ptr_model)
 bool br_npu::is_input_free()
 {
     std::lock_guard<std::mutex> lock(_mtx);
-
-    // Пока вход занят предыдущим кадром, кадр для детекции пропускается
     return _input_state == input_state::free;
 }
 
@@ -246,11 +245,12 @@ void br_npu::submit_input()
 {
     {
         std::lock_guard<std::mutex> lock(_mtx);
+        // Коли мы не были свободны, значит произошла какая-то фигня
         if (_input_state != input_state::free)
         {
             return;
         }
-        // Кадр уже уложен: прогон может стартовать
+        // Готовы стартовать
         _input_state = input_state::ready;
     }
     _cv.notify_one();
@@ -260,14 +260,14 @@ bool br_npu::run()
 {
     int ret = 0;
 
-    // Кадр в буфер пишет RGA, а читает NPU: синхронизируем кэш перед прогоном
+    // Синхронизация кэша между CPU и NPU
     ret = rknn_mem_sync(_app_ctx.rknn_ctx, _app_ctx.input_mems[0], RKNN_MEMORY_SYNC_TO_DEVICE);
     if (ret < 0)
     {
         printf("%s: rknn_mem_sync fail! Code: %d\n", __PRETTY_FUNCTION__, ret);
         return false;
     }
-
+    // Запускаем инференс
     ret = rknn_run(_app_ctx.rknn_ctx, nullptr);
     if (ret < 0)
     {
@@ -278,18 +278,19 @@ bool br_npu::run()
     return true;
 }
 
-// После прогона отдаем выходные тензоры разбору модели. Готовые рамки складываем
-// под мьютекс: цикл обработки кадров читает их оттуда, пока поток считает следующий кадр
 bool br_npu::process_outputs()
 {
-    // Описатели тензоров разбор держит у себя: сюда приходит только сообщение о готовом прогоне
+    // Список детекций
     br_model::detection_list detections;
+    // Собираем из выходных тензоров модели детекции
     if (!_ptr_model->process(detections))
     {
+        printf("%s: model process fail!\n", __PRETTY_FUNCTION__);
         return false;
     }
 
     {
+        // Обновляем детекции на выдачу и счетчик успешных прогонов кадров
         std::lock_guard<std::mutex> lock(_mtx_detections);
         _detections = std::move(detections);
         _inference_count++;
@@ -300,18 +301,22 @@ bool br_npu::process_outputs()
 
 void br_npu::worker()
 {
+    // Поток инференса
     while (true)
     {
         {
+            // Ждем stop или готовность входа
             std::unique_lock<std::mutex> lock(_mtx);
             _cv.wait(lock, [this] { return _stop || _input_state == input_state::ready; });
             if (_stop)
             {
                 return;
             }
+            // Помечаем, что мы заняты прогоном кадра
             _input_state = input_state::busy;
         }
 
+        // Запускаем инференс, а после обработку детекций
         if (!run() || !process_outputs())
         {
             printf("%s: frame skipped\n", __PRETTY_FUNCTION__);
@@ -319,6 +324,7 @@ void br_npu::worker()
 
         {
             std::lock_guard<std::mutex> lock(_mtx);
+            // Помечаем, что мы свободны и готовы принять следующий кадр
             _input_state = input_state::free;
         }
         _cv.notify_all();
@@ -327,7 +333,6 @@ void br_npu::worker()
 
 br_model::detection_list br_npu::get_detections()
 {
-    // Копия под замком: цикл рисует по ней, пока поток считает следующий кадр
     std::lock_guard<std::mutex> lock(_mtx_detections);
     return _detections;
 }
@@ -340,18 +345,19 @@ uint32_t br_npu::get_inference_count()
 
 bool br_npu::release()
 {
-    // Останавливаем поток прогона до освобождения контекста и памяти
+    // Стопаем поток инференса
     {
         std::lock_guard<std::mutex> lock(_mtx);
         _stop = true;
     }
     _cv.notify_all();
+    // Ждем завершения потока
     if (_worker.joinable())
     {
         _worker.join();
     }
 
-    // Отвязываем входные тензоры от блоков кадра (сами блоки и RGA-проход — за br_fsm и br_rga)
+    // Уведомляем NPU, что мы разбираем память под вход
     for (size_t i = 0; i < _app_ctx.input_mems.size(); i++)
     {
         if (_app_ctx.input_mems[i] != nullptr)
@@ -360,8 +366,10 @@ bool br_npu::release()
             _app_ctx.input_mems[i] = nullptr;
         }
     }
+    // Чистим вектор входных тензоров
     _app_ctx.input_mems.clear();
 
+    // Уведомляем NPU, что мы разбираем память под выход
     for (size_t i = 0; i < _app_ctx.output_mems.size(); i++)
     {
         if (_app_ctx.output_mems[i] != nullptr)
@@ -370,20 +378,24 @@ bool br_npu::release()
             _app_ctx.output_mems[i] = nullptr;
         }
     }
+    // Чистим вектор выходных тензоров
     _app_ctx.output_mems.clear();
 
+    // Чистим атрибуты тензоров входных
     if (_app_ctx.input_attrs != nullptr)
     {
         free(_app_ctx.input_attrs);
         _app_ctx.input_attrs = nullptr;
     }
 
+    // Чистим атрибуты тензоров выходных
     if (_app_ctx.output_attrs != nullptr)
     {
         free(_app_ctx.output_attrs);
         _app_ctx.output_attrs = nullptr;
     }
 
+    // Собственно, уничтожаем контекст модели
     if (_app_ctx.rknn_ctx != 0)
     {
         rknn_destroy(_app_ctx.rknn_ctx);

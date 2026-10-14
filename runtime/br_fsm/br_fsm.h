@@ -1,22 +1,7 @@
 #pragma once
 
-/**
- * @file br_fsm.h
- * @author khaernasov-ka
- * @brief Стейт-машина рантайма.
- * @version 0.1
- * @date 2026-09-23
- * 
- * Немного об аппаратных блоках внутри этого камня RV1106G3:
- * ├── VI - The VI module captures video images, cuts and zooms them, and outputs multi-channel image data with different resolutions.
- *      ├── VICAP 
- *      ├── ISP 
- *      ├── ISPP 
- *      ├── AIQ 
- * ├── VPSS - The VPSS module receives the image transmitted by the VI module, and can process the image by cutting, scaling, rotating, pixel format conversion and the like.
- * ├── VENC - The VENC module can directly receive the image captured by the VI module or the image data output after VPSS processing, superimpose the OSD image set by the user through the RGN module, and then encode and output the corresponding code stream according to different protocols.
- * 
- */
+/*
+*/
 
 #include <cstdint>
 #include <cstring>

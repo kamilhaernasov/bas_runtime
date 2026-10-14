@@ -6,36 +6,40 @@
 #include <cstdlib>
 #include <fstream>
 
-// Ниже порт postprocess.cc из примера luckfox_pico_rtsp_yolov5: деквантование выходных
-// тензоров, разбор боксов и NMS. Наружу из модуля ничего не торчит, все внутренности
-// доступны только методам br_model_yolo.
+/* 
+Ниже порт postprocess.cc из примера luckfox_pico_rtsp_yolov5.
+*/
 namespace
 {
-    // Сколько значений выходного тензора приходится на один бокс помимо оценок классов:
-    // четыре координаты и уверенность объекта. Это формат головы YOLOv5, а не свойство
-    // модели: тензор отдает только общее число каналов, где в них кончаются координаты,
-    // знает только сам алгоритм разбора (см. индексы hw_ptr ниже)
+    /*
+    База. Сколько значений без уверенностей на каждый класс детекции приходится на каждый якорь.
+    */
     constexpr int BOX_AND_CONF_SIZE = 5;
 
-    // Ограничение значения в диапазоне [min, max].
-    // Если val < min = min
-    // Если val > max = max
-    // Иначе val без дробной части
+    /* 
+    Ограничение значения в диапазоне [min, max].
+    Если val < min = min
+    Если val > max = max
+    Иначе val без дробной части
+    */
     int32_t clamp_value(float val, int32_t min, int32_t max) { return val > min ? (val < max ? val : max) : min; }
 
-    // Квантование float32 в int8
-    // scale - масштабирование, zp - смещение (zero point)
+    /*
+    Квантование float32 в int8
+    scale - масштабирование, zp - смещение (zero point)
+    */
     int8_t qnt_f32_to_affine(float f32, int32_t zp, float scale)
     {
         float dst_val = (f32 / scale) + zp;
         return static_cast<int8_t>(clamp_value(dst_val, -128, 127));
     }
 
-    // Деквантование int8 в float32
+    /* 
+    Деквантование int8 в float32
+    */
     float deqnt_affine_to_f32(int8_t qnt, int32_t zp, float scale) { return (static_cast<float>(qnt) - static_cast<float>(zp)) * scale; }
 }
 
-// Файл меток: по названию класса в строке, число строк задает число классов модели
 bool br_model_yolo::load_labels(const std::string& path)
 {
     std::ifstream file(path);
@@ -65,9 +69,6 @@ bool br_model_yolo::load_labels(const std::string& path)
     return !_labels.empty();
 }
 
-// Файл якорей: числа парами (ширина, высота), по паре на якорь.
-// Идут подряд по головам: сначала все якоря старшей головы, потом следующей.
-// Пример содержимого: 10.0 13.0 16.0 30.0 33.0 23.0 ... — это первые три якоря YOLOv5
 bool br_model_yolo::load_anchors(const std::string& path)
 {
     std::ifstream file(path);
@@ -102,36 +103,35 @@ bool br_model_yolo::load_anchors(const std::string& path)
 
 bool br_model_yolo::setup(const model_info& model_info)
 {
-    // Разбор работает с целочисленными выходами: RV1106 в zero-copy отдает только i8
+    // Проверям, что модель квантованная
     if (!model_info._is_quant)
     {
         printf("%s: model output is not quantized!\n", __PRETTY_FUNCTION__);
         return false;
     }
 
-    // Пороги приходят из конфига модели: без них разбор не имеет смысла
+    // Проверяем, что стоят пороги на детекцию и перекрытие
     if (_settings._box_thresh <= 0 || _settings._nms_thresh <= 0)
     {
         printf("%s: thresholds are not set!\n", __PRETTY_FUNCTION__);
         return false;
     }
 
-    // Кадр во вход модели укладывает RGA, а разбор возвращает рамки обратно по его геометрии
+    // Проверяем, что кадр вписан 
     if (_settings._scale <= 0)
     {
         printf("%s: letterbox scale is not set!\n", __PRETTY_FUNCTION__);
         return false;
     }
 
-    // Сколько рамок помещается в кадр, задается настройкой: при нуле детекций не будет
+    // Проверяем, что нам разрешено вообще детектировать больше нуля объектов
     if (_settings._max_detections <= 0)
     {
         printf("%s: max detections is not set!\n", __PRETTY_FUNCTION__);
         return false;
     }
 
-    // Названия классов и якоря голов лежат в файлах рядом с моделью: обе вещи относятся
-    // именно к ней, поэтому задаются данными, а не константами
+    // Грузим классы и якоря
     if (!load_labels(_settings._path_to_labels) || !load_anchors(_settings._path_to_anchors))
     {
         return false;
@@ -147,16 +147,18 @@ bool br_model_yolo::setup(const model_info& model_info)
     _model_height = model_info._input_height;
 
     // Якоря лежат парами (ширина, высота) и поделены между головами поровну
-    const int anchor_count = (int)_anchors.size() / 2;
+    const size_t anchor_count = _anchors.size() / 2;
     if (anchor_count % _head_count != 0)
     {
         printf("%s: anchors %d do not match heads %d!\n", __PRETTY_FUNCTION__, anchor_count, _head_count);
         return false;
     }
+    // Количество якорей на одну ячейку в голове.
     _anchor_per_branch = anchor_count / _head_count;
 
-    // Каналы выхода: на каждую ячейку сетки по prop_box_size значений на каждый якорь.
-    // Тензоры уже собраны базой из атрибутов модели, здесь берется форма первой головы
+    // Рассчитываем, сколько каналов значений есть в выходной ячейке.
+    // Каналы - описание бокса детекции на всю ячейку.
+    // В целом мы уже знаем это из модели, здесь же просто достаем из готового первого выходного тензора.
     const int channels = (int)_tensors[0]._dims[_tensors[0]._n_dims - 1];
     if (channels % _anchor_per_branch != 0)
     {
@@ -164,11 +166,13 @@ bool br_model_yolo::setup(const model_info& model_info)
                __PRETTY_FUNCTION__, channels, _anchor_per_branch);
         return false;
     }
+    // Рассчитываем, сколько значений используются для описания одного бокса детекции.
+    // Channels - это на всю ячейку. Внутри ячейки есть якоря. Собственно, поэтому и деление.
     _prop_box_size = channels / _anchor_per_branch;
 
-    // Классов столько, сколько строк в файле меток: имена классов и выход модели
-    // описывают одну модель, поэтому их числа должны сойтись
-    _class_num = (int)_labels.size();
+    // На всякий пожарный проверяем, что вычисленное значение кол-во байт на один якорь сходится с ожидаемым:
+    // 4 координаты + 1 уверенность, что объект есть + N уверенностей на каждый класс детекции
+    _class_num = _labels.size();
     if (_prop_box_size != _class_num + BOX_AND_CONF_SIZE)
     {
         printf("%s: classes mismatch: model %d, %s %d!\n",
@@ -185,13 +189,15 @@ bool br_model_yolo::setup(const model_info& model_info)
 
 bool br_model_yolo::process(detection_list& detections)
 {
+    // Во-первых, само собой чистим, что нам передали. Мало ли.
     detections.clear();
 
-    // Кандидаты со всех голов лежат в одном списке: дубликаты между головами тоже возможны.
-    // Описатели голов собраны в init: на каждом прогоне меняется только содержимое их памяти
+    // Боксы детекции всех якорей со всех ячеек, со всех голов.
     std::vector<box> boxes;
-    for (int head = 0; head < (int)_tensors.size(); head++)
+    // Проходимся по всем головам
+    for (size_t head = 0; head < _tensors.size(); head++)
     {
+        // Достаем все с головы
         process_head(_tensors[head], head, boxes);
     }
 
@@ -201,12 +207,14 @@ bool br_model_yolo::process(detection_list& detections)
         return true;
     }
 
+    // Подавляем наложения
     suppress_overlaps(boxes);
 
+    // Собираем итог детекций
     for (const box& candidate : boxes)
     {
-        // Сколько рамок помещается в кадр, задает настройка
-        if ((int)detections.size() >= _settings._max_detections)
+        // Ограничиваемся настройками
+        if (detections.size() >= _settings._max_detections)
         {
             break;
         }
@@ -219,7 +227,8 @@ bool br_model_yolo::process(detection_list& detections)
         result.box.right = clamp_value((candidate.right - _settings._pad_x) / _settings._scale, 0, _settings._width - 1);
         result.box.bottom = clamp_value((candidate.bottom - _settings._pad_y) / _settings._scale, 0, _settings._height - 1);
         result.prop = candidate.score;
-        result.cls_id = candidate.cls_id;
+        result.cls_id = get_class_name(candidate.cls_id);
+
         detections.push_back(result);
     }
 
@@ -238,49 +247,47 @@ const char* br_model_yolo::get_class_name(const int cls_id) const
     return _labels[cls_id].c_str();
 }
 
-// Разбор одной головы модели: раскладка NHWC, деквантование и декодирование боксов.
-// head — номер головы: по нему берутся якоря этой головы.
-// output — выходной тензор головы.
-// boxes — куда складываются найденные кандидаты.
-//
-// Раскладка выходного тензора: на каждую ячейку сетки приходится anchor_per_branch якорей,
-// на каждый якорь prop_box_size значений:
-// [0..3] — смещение центра и размер рамки относительно якоря
-// [4]    — уверенность объекта
-// [5..]  — оценки классов
-// Поэтому одна ячейка занимает align_c = prop_box_size * anchor_per_branch значений
-void br_model_yolo::process_head(const tensor& output, const int head, std::vector<box>& boxes) const
+void br_model_yolo::process_head(const tensor& output, const size_t head, std::vector<box>& boxes) const
 {
-    // Высота и ширина сетки этой головы: у каждой головы свой шаг (stride)
-    const int grid_h = output._dims[2];
-    const int grid_w = output._dims[1];
+    // TODO: добавить проверки на границы.
+
+    // Дэм, достаем размеры сетки у этого тензора. NHWC, помним.
+    const int grid_h = output._dims[1]; // nHwc
+    const int grid_w = output._dims[2]; // nhWc
     // Шаг сетки: сколько пикселей входа приходится на одну ячейку
     const int stride = _model_height / grid_h;
-    // Параметры квантования: ими int8 переводится обратно в float
+    // Достаем параметры квантования
     const int32_t zp = output._zp;
     const float scale = output._scale;
+    // Достаем сами данные
     const int8_t* input = output._data;
-    const float threshold = _settings._box_thresh;
     // Порог в квантованном виде: сравнивать int8 быстрее, чем float
-    const int8_t thres_i8 = qnt_f32_to_affine(threshold, zp, scale);
+    const int8_t thres_i8 = qnt_f32_to_affine(_settings._box_thresh, zp, scale);
+    // Сколько в ячейке параметров у нас для описания каждого бокса в каждом якоре
     const int align_c = _prop_box_size * _anchor_per_branch;
-    // Якоря этой головы: (ширина, высота) на каждый якорь
+    // Якоря этой головы: (ширина, высота) на каждый якорь (умножаем на 2, так одна ячейка массива описывает весь якорь)
     const float* ptr_anchor = &_anchors[head * _anchor_per_branch * 2];
 
+    // Ходим по строкам сетки
     for (int h = 0; h < grid_h; h++)
     {
+        // Ходим по столбцам сетки
         for (int w = 0; w < grid_w; w++)
         {
+            // Ходим по якорям
             for (int a = 0; a < _anchor_per_branch; a++)
             {
-                // Смещение до набора значений этого якоря в этой ячейке сетки
+                // Смещение до самих значений детекции внутри якоря
+                // строка_сетки*ширину_сетки*кол-во_значений_одной_ячейки + столбец_сетки * кол-во_значений_одной_ячейки + якорь * кол-во_значений_в_одном_якоре
                 const int hw_offset = h * grid_w * align_c + w * align_c + a * _prop_box_size;
+                // Сдвигаем указатель с начала на смещение до данных
                 const int8_t* hw_ptr = input + hw_offset;
+                // Уверенность, что объект есть (отдается в квантованном виде)
                 const int8_t box_confidence = hw_ptr[4];
-
+                // Если чёт есть в этом якоре
                 if (box_confidence >= thres_i8)
                 {
-                    // Берем самый вероятный класс: остальные для этой рамки не нужны
+                    // Ходим по классам и берем класс с максимальной уверенностью
                     int8_t max_class_probs = hw_ptr[BOX_AND_CONF_SIZE];
                     int max_class_id = 0;
                     for (int k = 1; k < _class_num; ++k)
@@ -292,15 +299,16 @@ void br_model_yolo::process_head(const tensor& output, const int head, std::vect
                             max_class_probs = prob;
                         }
                     }
-
+                    // Деквантируем уверенность, что что-то есть
                     const float box_conf_f32 = deqnt_affine_to_f32(box_confidence, zp, scale);
+                    // Деквантируем уверенность конкретного класса-победителя
                     const float class_prob_f32 = deqnt_affine_to_f32(max_class_probs, zp, scale);
+                    // Вычисляем вероятность детекции
                     const float limit_score = box_conf_f32 * class_prob_f32;
-
-                    if (limit_score > threshold)
+                    // Если вероятность больше порога
+                    if (limit_score > _settings._box_thresh)
                     {
-                        // Рамка выдается относительно якоря: сигмоиды дают смещение центра
-                        // внутри ячейки и размер, якорь переводит размер в пиксели входа
+                        // Не пытался это понять, взял из примера. Что-то про сырой вывод yolo.
                         float box_x = deqnt_affine_to_f32(hw_ptr[0], zp, scale) * 2.0 - 0.5;
                         float box_y = deqnt_affine_to_f32(hw_ptr[1], zp, scale) * 2.0 - 0.5;
                         float box_w = deqnt_affine_to_f32(hw_ptr[2], zp, scale) * 2.0;
@@ -309,8 +317,8 @@ void br_model_yolo::process_head(const tensor& output, const int head, std::vect
                         box_h = box_h * box_h;
 
                         // Центр ячейки сетки плюс смещение, размер — от якоря головы
-                        box_x = (box_x + w) * (float)stride;
-                        box_y = (box_y + h) * (float)stride;
+                        box_x = (box_x + w) * stride;
+                        box_y = (box_y + h) * stride;
                         box_w *= ptr_anchor[a * 2];
                         box_h *= ptr_anchor[a * 2 + 1];
 
@@ -318,6 +326,7 @@ void br_model_yolo::process_head(const tensor& output, const int head, std::vect
                         box_x -= (box_w / 2.0);
                         box_y -= (box_h / 2.0);
 
+                        // Ура, у нас есть кандидат.
                         box candidate;
                         candidate.left = box_x;
                         candidate.top = box_y;
@@ -333,17 +342,6 @@ void br_model_yolo::process_head(const tensor& output, const int head, std::vect
     }
 }
 
-// Подавление дубликатов (NMS): на один объект модель часто выдает несколько похожих рамок.
-// Сравниваем только рамки одного класса: разные классы могут законно перекрываться
-// (например, человек и его рюкзак).
-//
-// Порядок работы:
-// 1. Сортируем кандидатов по убыванию уверенности: самые уверенные рамки сохраняем первыми.
-// 2. Идем по списку и оставляем рамку, только если она пересекается слабее порога
-//    _nms_thresh с каждой уже оставленной рамкой своего класса.
-//
-// Пример: три рамки вокруг одного человека с уверенностями 0.9, 0.7 и 0.5 — останется
-// только первая, потому что две другие пересекаются с ней сильнее порога.
 void br_model_yolo::suppress_overlaps(std::vector<box>& boxes) const
 {
     std::sort(boxes.begin(), boxes.end(),
@@ -373,11 +371,6 @@ void br_model_yolo::suppress_overlaps(std::vector<box>& boxes) const
     boxes.swap(kept);
 }
 
-// Коэффициент пересечения двух рамок (IoU) = площадь пересечения / площадь объединения.
-// Площадь пересечения — это площадь той области, где прямоугольники накладываются.
-// Площадь объединения — это площадь всей области, которую занимают оба прямоугольника вместе (без двойного счёта общей части).
-// a, b — рамки одного класса, которые сравниваются.
-// Возвращает 0, если рамки не пересекаются, и 1, если совпадают.
 float br_model_yolo::overlap(const box& a, const box& b)
 {
     const float w = fmax(0.f, fmin(a.right, b.right) - fmax(a.left, b.left) + 1.0);

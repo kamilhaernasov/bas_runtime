@@ -6,29 +6,27 @@
 
 bool br_model::init(const model_info& model_info)
 {
-    // Без выходов разбирать нечего: описатели собираются только по атрибутам модели
+    // Если нам не передали инфу о выходных тензорах, зачем вообще продолжать?
     if (model_info._output_count <= 0 || model_info._output_attrs == nullptr || model_info._output_mems == nullptr)
     {
         printf("%s: model has no outputs!\n", __PRETTY_FUNCTION__);
         return false;
     }
 
-    // Данные лежат в памяти, привязанной к NPU, размерности и параметры квантования —
-    // в атрибутах тензоров: из этого и получается описатель, которым пользуется разбор
+    // Заполняем выходные тензоры.
     _tensors.clear();
     for (int i = 0; i < model_info._output_count; i++)
     {
         tensor output;
-        output._data = static_cast<const int8_t*>(model_info._output_mems[i]->virt_addr);
-        output._dims = model_info._output_attrs[i].dims;
-        output._n_dims = model_info._output_attrs[i].n_dims;
-        output._zp = model_info._output_attrs[i].zp;
-        output._scale = model_info._output_attrs[i].scale;
+        output._data = static_cast<const int8_t*>(model_info._output_mems[i]->virt_addr); // Указатель на данные тензора.
+        output._dims = model_info._output_attrs[i].dims; // Атрибуты тензора.
+        output._n_dims = model_info._output_attrs[i].n_dims; // Размерность тензора.
+        output._zp = model_info._output_attrs[i].zp; // zero-point тензора.
+        output._scale = model_info._output_attrs[i].scale; // scale тензора.
         _tensors.push_back(output);
     }
 
-    // Форму модели проверяет уже конкретная реализация: она одна знает, что должно
-    // получиться на выходе
+    // Стартуем внутреннию реализацию инициализации.
     return setup(model_info);
 }
 

@@ -120,7 +120,7 @@ bool br_fsm::init()
     };
     printf("%s: _rtsp.init: ok\n", __PRETTY_FUNCTION__);
 
-    // Модель: разбор ее выходов создается по типу из конфига модели
+    // Model
     _model = br_model_create(_settings._model_type);
     if (_model == nullptr)
     {
@@ -129,19 +129,14 @@ bool br_fsm::init()
 
     br_model::settings model_settings
     {
-        // Файл модели и размер ее входа: у модели их спрашивает br_npu, когда создает
-        // контекст NPU и сверяет с ними блок кадра
         ._path_to_model = _settings._path_to_model,
         ._width_model = _settings._width_model,
         ._height_model = _settings._height_model,
         ._box_thresh = _settings._box_thresh,
         ._nms_thresh = _settings._nms_thresh,
         ._max_detections = _settings._max_detections,
-        // Файлы меток и якорей лежат рядом с моделью: их читает сама реализация разбора
         ._path_to_labels = _settings._path_to_labels,
         ._path_to_anchors = _settings._path_to_anchors,
-        // Размер кадра и геометрию вписывания задает RGA, который и укладывает кадр:
-        // по ним разбор возвращает рамки из пространства модели в координаты кадра
         ._width = _settings._width,
         ._height = _settings._height,
         ._scale = _brga.get_scale(),
@@ -277,7 +272,7 @@ bool br_fsm::draw_detections(void* ptr_frame)
     for (const br_model::detection& result : detections)
     {
         printf("%s @ (%d %d %d %d) %.3f\n",
-               _model->get_class_name(result.cls_id),
+               result.cls_id.c_str(),
                result.box.left, result.box.top, result.box.right, result.box.bottom,
                result.prop);
 
@@ -287,7 +282,7 @@ bool br_fsm::draw_detections(void* ptr_frame)
                       cv::Scalar(0, 255, 0), 3);
 
         char text[64];
-        sprintf(text, "%s %.1f%%", _model->get_class_name(result.cls_id), result.prop * 100);
+        sprintf(text, "%s %.1f%%", result.cls_id.c_str(), result.prop * 100);
         cv::putText(frame, text, cv::Point(result.box.left, result.box.top - 8),
                     cv::FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(0, 255, 0), 2);
     }
