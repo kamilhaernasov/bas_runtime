@@ -2,9 +2,12 @@
 
 #include <cstdio>
 #include <iostream>
-#include "opencv2/core/core.hpp"
-#include "opencv2/highgui/highgui.hpp"
-#include "opencv2/imgproc/imgproc.hpp"
+
+namespace
+{
+    /* Кадр под внешний скрипт - три байта на пиксель, формат тот же, что уходит в поток */
+    constexpr uint32_t HOOK_BYTES_PER_PIXEL = 3;
+}
 
 br_fsm::br_fsm()
 {
@@ -51,6 +54,19 @@ bool br_fsm::init()
     };
     printf("%s: _mb_pool_npu.create_mb_blk: ok\n", __PRETTY_FUNCTION__);
 
+    // MB_POOL под кадр внешнего скрипта: формат тот же, что уходит в поток, то есть три байта на пиксель
+    if (!_mb_pool_hook.init(_settings._mb_blk_count, _settings._width * _settings._height * HOOK_BYTES_PER_PIXEL))
+    {
+        return false;
+    };
+    printf("%s: _mb_pool_hook.init: ok\n", __PRETTY_FUNCTION__);
+
+    if (_mb_pool_hook.create_mb_blk(RK_TRUE) == MB_INVALID_HANDLE)
+    {
+        return false;
+    };
+    printf("%s: _mb_pool_hook.create_mb_blk: ok\n", __PRETTY_FUNCTION__);
+
     // RGA: кадр для VENC и кадр под вход модели
     br_rga::settings settings
     {
@@ -62,6 +78,7 @@ bool br_fsm::init()
         ._pixel_format_in = _settings._pixel_format_in,
         ._pixel_format_in_rga = _settings._pixel_format_in_rga,
         ._pixel_format_out_rga = _settings._pixel_format_out_rga,
+        ._pixel_format_hook_rga = _settings._pixel_format_hook_rga,
         ._pixels_per_byte_out = _settings._bytes_per_pixel_out,
         ._pixels_per_byte_in = _settings._bytes_per_pixel_in,
     };
@@ -153,6 +170,25 @@ bool br_fsm::init()
     };
     printf("%s: _npu.init: ok\n", __PRETTY_FUNCTION__);
 
+    // Хук: внешний скрипт пользователя. Кадр под него готовит RGA, рисует он сам, своей
+    // отрисовки в рантайме нет. Настройки лежат отдельно (hook.ini)
+    br_hook::settings hook_settings
+    {
+        ._is_enabled = _settings._hook_enabled,
+        ._is_async = _settings._hook_async,
+        ._path_script = _settings._path_to_hook,
+        ._path_python = _settings._path_python,
+        ._timeout_ms = _settings._hook_timeout_ms,
+        ._stuck_ms = _settings._hook_stuck_ms,
+        ._start_ms = _settings._hook_start_ms,
+    };
+    _hook.set_settings(hook_settings);
+    if (!_hook.init(_settings._width, _settings._height, _mb_pool_hook.get_mb_blk(0)))
+    {
+        return false;
+    };
+    printf("%s: _hook.init: ok\n", __PRETTY_FUNCTION__);
+
     return true;
 }
 
@@ -170,18 +206,33 @@ bool br_fsm::start()
             is_failed = true;
         }
         _stage_us.vi += (frame_us.vi = take_stage_time());
+        // Хук, часть первая: забираем готовый кадр скрипта до конвертации кадра с VI - место
+        // в буфере VENC все равно займет он, и проход RGA можно не тратить
+        uint64_t hook_us = take_stage_time();
+        bool is_hook_frame = false;
+        if (!is_failed && _hook.is_enabled())
+        {
+            _hook.poll();
+            if (_hook.take_ready())
+            {
+                // Кадр писал скрипт процессором, а читать его дальше будет железо: без сброса
+                // кэша разметка может до железа не дойти
+                if (_mb_pool_hook.mmz_flush_cache(0))
+                {
+                    // Разметка ложится в буфер VENC копией. Отдать блок скрипта в VENC напрямую
+                    // нельзя: этим же блоком скрипт получит следующий кадр, пока VENC еще читает
+                    // текущий. Копия тут - развязка двух буферов
+                    is_hook_frame = _brga.process_frame_from_hook(_mb_pool_hook.get_mb_blk(0));
+                }
+            }
+        }
+        hook_us += take_stage_time();
         // Обработка в RGA
-        if (!is_failed && !_brga.process_frame(_vi.get_last_frame()))
+        if (!is_failed && !is_hook_frame && !_brga.process_frame(_vi.get_last_frame()))
         {
             is_failed = true;
         };
         _stage_us.rga += (frame_us.rga = take_stage_time());
-        // Получаем указатель на фрейм после rga
-        void* frame_after_brga = _mb_pool.get_ptr_from_mb_blk(_mb_pool.get_mb_blk(0));
-        if (!is_failed && frame_after_brga == nullptr)
-        {
-            is_failed = true;
-        }
         // Отдаем кадр в поток детекции. Спрашиваем NPU до прохода RGA: если он занят
         // предыдущим кадром, кадр пропускается и вписывание в вход модели не тратится
         if (!is_failed && _npu.is_input_free())
@@ -197,13 +248,32 @@ bool br_fsm::start()
             }
         }
         _stage_us.npu += (frame_us.npu = take_stage_time());
-        // Рисуем рамки по последнему готовому результату детекции
-        if (!is_failed && !draw_detections(frame_after_brga))
+        // Хук, часть вторая: отдаем скрипту текущий кадр. Пока он с ним работает, кадр ему
+        // не отдаем: в поток идут текущие кадры с камеры
+        if (!is_failed && _hook.is_enabled() && _hook.is_free())
         {
-            is_failed = true;
+            if (_brga.process_frame_hook(_vi.get_last_frame(), _mb_pool_hook.get_mb_blk(0)))
+            {
+                // Кадр в буфер писала железка (RGA), а читает его скрипт процессором: без сброса
+                // кэша скрипт прочитает то, что осталось в кэше с прошлого кадра
+                _mb_pool_hook.mmz_invalidate_cache(0);
+                // Боксы уезжают с каждым кадром - последние полученные от NPU. Отдавать их только
+                // к свежему прогону нельзя: прогон не успевает за кадрами, и разметка мерцала бы
+                _hook.submit(_npu.get_detections());
+                // Синхронный режим: конвеер ждет скрипт, но не дольше своего бюджета.
+                // Не дождались — в поток уйдет кадр с камеры, он уже готов
+                if (!_hook.is_async() && _hook.wait())
+                {
+                    if (_mb_pool_hook.mmz_flush_cache(0))
+                    {
+                        // Разметка того же кадра ложится в буфер VENC поверх кадра с VI
+                        _brga.process_frame_from_hook(_mb_pool_hook.get_mb_blk(0));
+                    }
+                }
+            }
         }
-        _stage_us.draw += (frame_us.draw = take_stage_time());
-        // Сбрасываем кэш, иначе мерцает open-cv
+        _stage_us.hook += (frame_us.hook = hook_us + take_stage_time());
+        // Сбрасываем кэш после RGA: иначе VENC прочитает не то, что лежит в памяти
         if (!is_failed && !_mb_pool.mmz_flush_cache(0))
         {
             is_failed = true;
@@ -246,7 +316,9 @@ bool br_fsm::start()
 
  bool br_fsm::release()
  {
-    // Сначала отпускаем всех, кто держит блоки кадра, и только потом сами пулы
+    // Сначала внешний скрипт: он читает свой буфер, который мы дальше и освободим
+    _hook.release();
+    // Отпускаем всех, кто держит блоки кадра, и только потом сами пулы
     _npu.release();
     // Разбор модели больше не нужен: NPU уже остановлен
     _model.reset();
@@ -256,39 +328,12 @@ bool br_fsm::start()
     _vi.release();
     _mb_pool_npu.release();
     _mb_pool.release();
+    _mb_pool_hook.release();
     // Обязательно
     RK_MPI_SYS_Exit();
 
     return true;
  }
-
-bool br_fsm::draw_detections(void* ptr_frame)
-{
-    br_model::detection_list detections = _npu.get_detections();
-
-    // Кадр после RGA лежит в формате RGB888
-    cv::Mat frame(cv::Size(_settings._width, _settings._height), CV_8UC3, ptr_frame);
-
-    for (const br_model::detection& result : detections)
-    {
-        printf("%s @ (%d %d %d %d) %.3f\n",
-               result.cls_id.c_str(),
-               result.box.left, result.box.top, result.box.right, result.box.bottom,
-               result.prop);
-
-        cv::rectangle(frame,
-                      cv::Point(result.box.left, result.box.top),
-                      cv::Point(result.box.right, result.box.bottom),
-                      cv::Scalar(0, 255, 0), 3);
-
-        char text[64];
-        sprintf(text, "%s %.1f%%", result.cls_id.c_str(), result.prop * 100);
-        cv::putText(frame, text, cv::Point(result.box.left, result.box.top - 8),
-                    cv::FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(0, 255, 0), 2);
-    }
-
-    return true;
-}
 
 uint64_t br_fsm::get_current_time_us() const
 {
@@ -330,13 +375,13 @@ void br_fsm::print_fps()
     const double det_per_sec = (double)(inference_count - _inference_count_prev) * 1000000.0 / (double)period_us;
     _inference_count_prev = inference_count;
 
-    printf("[fps] %.2f | frame %.1f ms | vi %.1f | rga %.1f | npu %.1f | draw %.1f | flush %.1f | venc %.1f | rtsp %.1f ms | det %.1f/s\n",
+    printf("[fps] %.2f | frame %.1f ms | vi %.1f | rga %.1f | npu %.1f | hook %.1f | flush %.1f | venc %.1f | rtsp %.1f ms | det %.1f/s\n",
            frames * 1000000.0 / (double)period_us,
            frame_us / 1000.0,
            (double)_stage_us.vi / frames / 1000.0,
            (double)_stage_us.rga / frames / 1000.0,
            (double)_stage_us.npu / frames / 1000.0,
-           (double)_stage_us.draw / frames / 1000.0,
+           (double)_stage_us.hook / frames / 1000.0,
            (double)_stage_us.flush / frames / 1000.0,
            (double)_stage_us.venc / frames / 1000.0,
            (double)_stage_us.rtsp / frames / 1000.0,
@@ -350,14 +395,14 @@ void br_fsm::print_fps()
 void br_fsm::print_frame_debug(const stage_stats& frame_us)
 {
 #ifdef debug_frame
-    // Сколько рамок пришло с последнего готового прогона: их же рисует draw_detections
+    // Сколько рамок пришло с последнего готового прогона: их же рисует скрипт хука
     const uint32_t detection_count = (uint32_t)_npu.get_detections().size();
 
-    printf("[frame] vi %.2f | rga %.2f | npu %.2f | draw %.2f | flush %.2f | venc %.2f | rtsp %.2f ms | det %u\n",
+    printf("[frame] vi %.2f | rga %.2f | npu %.2f | hook %.2f | flush %.2f | venc %.2f | rtsp %.2f ms | det %u\n",
            (double)frame_us.vi / 1000.0,
            (double)frame_us.rga / 1000.0,
            (double)frame_us.npu / 1000.0,
-           (double)frame_us.draw / 1000.0,
+           (double)frame_us.hook / 1000.0,
            (double)frame_us.flush / 1000.0,
            (double)frame_us.venc / 1000.0,
            (double)frame_us.rtsp / 1000.0,

@@ -107,3 +107,19 @@ bool br_mb_pool::mmz_flush_cache(const uint8_t index)
 
     return true;
 }
+
+bool br_mb_pool::mmz_invalidate_cache(const uint8_t index)
+{
+    int ret = RK_MPI_SYS_MmzFlushCache(
+        get_mb_blk(index),
+        RK_TRUE
+    );
+
+    if (ret != 0)
+    {
+        printf("%s: RK_MPI_SYS_MmzFlushCache fail! Desc: %d\n", __PRETTY_FUNCTION__, ret);
+        return false;
+    }
+
+    return true;
+}

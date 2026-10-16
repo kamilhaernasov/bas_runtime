@@ -29,6 +29,9 @@ public:
     void* get_ptr_from_mb_blk(MB_BLK blk);
 
     bool mmz_flush_cache(const uint8_t index);
+    // Сброс кэша в другую сторону: буфер писала железка, а читает его процессор.
+    // Без этого процессор может прочитать то, что осталось в кэше с прошлого раза
+    bool mmz_invalidate_cache(const uint8_t index);
 private:
     MB_POOL _mb_pool = MB_INVALID_POOLID;
     std::vector<MB_BLK> _ptrs_mb;

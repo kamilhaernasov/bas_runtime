@@ -33,6 +33,15 @@ set(CMAKE_INSTALL_PREFIX "${CMAKE_SOURCE_DIR}/install/" CACHE PATH "Install pref
 # выставленный CMAKE_C_COMPILER/CMAKE_CXX_COMPILER уже не влияет на сборку.
 # Path to SDK from env
 set(SDK_PATH $ENV{LUCKFOX_SDK_PATH})
+# Без пути до SDK не найти ни компиляторы, ни заголовки Rockchip. Если сборка уже
+# конфигурировалась раньше, ошибка вылезет не здесь, а где-то в середине сборки
+# непонятным "rk_comm_mb.h: No such file or directory", поэтому проверяем сразу
+if (NOT SDK_PATH)
+    message(FATAL_ERROR
+        "LUCKFOX_SDK_PATH не задан.\n"
+        "Экспортируйте путь до SDK перед сборкой, например:\n"
+        "    export LUCKFOX_SDK_PATH=$HOME/luckfox-pico")
+endif()
 # Path to compilers from SDK
 set(CMAKE_C_COMPILER "${SDK_PATH}/tools/linux/toolchain/arm-rockchip830-linux-uclibcgnueabihf/bin/arm-rockchip830-linux-uclibcgnueabihf-gcc")
 set(CMAKE_CXX_COMPILER "${SDK_PATH}/tools/linux/toolchain/arm-rockchip830-linux-uclibcgnueabihf/bin/arm-rockchip830-linux-uclibcgnueabihf-g++")
@@ -62,6 +71,7 @@ add_executable(${PROJECT_NAME}
     ${CMAKE_SOURCE_DIR}/runtime/br_fsm/br_npu/br_npu.cpp
     ${CMAKE_SOURCE_DIR}/runtime/br_fsm/br_model/br_model.cpp
     ${CMAKE_SOURCE_DIR}/runtime/br_fsm/br_model/br_model_yolo.cpp
+    ${CMAKE_SOURCE_DIR}/runtime/br_fsm/br_hook/br_hook.cpp
 )
 
 # ---- Libs ----
@@ -81,9 +91,6 @@ endif()
 target_link_directories(${PROJECT_NAME} PRIVATE
     "${SDK_PATH}/dependencies/lib/uclibc"
 )
-# OpenCV
-set(OpenCV_DIR "${SDK_PATH}/dependencies/lib/uclibc/lib/cmake/opencv4")
-find_package(OpenCV REQUIRED QUIET)
 # Pthread
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
@@ -113,7 +120,6 @@ set(CMAKE_EXE_LINKER_FLAGS  "${CMAKE_EXE_LINKER_FLAGS} -Wl,-rpath-link,${SDK_PAT
 
 # ---- Link libs ----
 target_link_libraries(${PROJECT_NAME}
-    ${OpenCV_LIBS}
     rknnmrt
     Threads::Threads
     rockiva
@@ -127,6 +133,11 @@ target_link_libraries(${PROJECT_NAME}
     inih
 )
 
+# std::filesystem в libstdc++ до GCC 9 лежит отдельной библиотекой: без нее не слинкуется
+if (CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9.0)
+    target_link_libraries(${PROJECT_NAME} stdc++fs)
+endif()
+
 # ---- Include dirs ----
 target_include_directories(${PROJECT_NAME} PRIVATE       
     ${CMAKE_SOURCE_DIR}/runtime/br_fsm/
@@ -137,7 +148,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_SOURCE_DIR}/runtime/br_fsm/br_rga     
     ${CMAKE_SOURCE_DIR}/runtime/br_fsm/br_npu                          
     ${CMAKE_SOURCE_DIR}/runtime/br_fsm/br_model
-    ${OpenCV_INCLUDE_DIRS}
+    ${CMAKE_SOURCE_DIR}/runtime/br_fsm/br_hook
     ${CMAKE_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/utils
     ${CMAKE_CURRENT_SOURCE_DIR}/common 
@@ -160,3 +171,9 @@ install(TARGETS ${PROJECT_NAME} DESTINATION .)
 # Конфиги читаются из рабочего каталога, поэтому кладем их рядом с бинарником
 install(FILES ${CMAKE_SOURCE_DIR}/config.ini DESTINATION .)
 install(FILES ${CMAKE_SOURCE_DIR}/model.ini DESTINATION .)
+# Конфиг и скрипты хука: лежат рядом с бинарником и запускаются по своим путям
+install(FILES ${CMAKE_SOURCE_DIR}/hook.ini DESTINATION .)
+# Обвязка хука: рантайм находит ее рядом с собой, а она - пользовательский скрипт из конфига
+install(FILES ${CMAKE_SOURCE_DIR}/hook_main.py DESTINATION .)
+# Пример пользовательского скрипта: одна функция draw(frame, detections)
+install(FILES ${CMAKE_SOURCE_DIR}/hook_user.py DESTINATION .)

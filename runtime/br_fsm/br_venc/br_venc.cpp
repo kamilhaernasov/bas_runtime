@@ -26,6 +26,9 @@ bool br_venc::init(const uint16_t channel, MB_BLK ptr_blk)
 {
     int ret = 0;
 
+    // Разбор потока VENC: pstPack заполняет MPI, а освобождать его может и не понадобиться,
+    // поэтому счетчик пакетов должен быть нулевым, а не мусором со стека
+    memset(&_codec_frame, 0, sizeof(_codec_frame));
     _codec_frame.pstPack = (VENC_PACK_S *)malloc(sizeof(VENC_PACK_S));
 
 	_frame.stVFrame.u32Width = _settings._width;
@@ -132,6 +135,9 @@ bool br_venc::process_frame()
 		printf("%s: RK_MPI_VENC_SendFrame fail! ret=%x\n", __PRETTY_FUNCTION__, ret);
 		return false;
 	}
+
+    _is_stream_held = true;
+
     return true;
 }
 
@@ -143,6 +149,13 @@ VENC_STREAM_S* br_venc::get_codec_frame()
 bool br_venc::release_codec_frame()
 {
     int ret = 0;
+
+    // Кадр не дошел до VENC (ошибка раньше по циклу) — отпускать нечего
+    if (!_is_stream_held)
+    {
+        return true;
+    }
+    _is_stream_held = false;
 
     ret = RK_MPI_VENC_ReleaseStream(_channel, &_codec_frame);
     if (ret != RK_SUCCESS)

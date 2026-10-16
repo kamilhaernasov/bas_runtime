@@ -23,6 +23,8 @@ bool br_rga::init(MB_BLK ptr_blk, MB_BLK ptr_blk_model)
     _size_for_model = _settings._width_model * _settings._height_model * _settings._pixels_per_byte_out;
     // Считаем размеры приходящего буфера с vi
     _size_from_vi = _settings._width * _settings._height * _settings._pixels_per_byte_in;
+    // Считаем размер кадра под внешний скрипт: разрешение кадра, три байта на пиксель
+    _size_for_hook = _settings._width * _settings._height * _settings._pixels_per_byte_out;
 
     // Вписываем кадр во вход модели с сохранением пропорций (letterbox): масштаб по меньшей
     // стороне, остаток — поля вокруг кадра
@@ -205,6 +207,129 @@ bool br_rga::process_frame(VIDEO_FRAME_INFO_S* ptr_frame)
     }
 
     ret = releasebuffer_handle(handle_buffer_vi);
+    if (ret != IM_STATUS_SUCCESS)
+    {
+        printf("%s: releasebuffer_handle fail! Desc: %s, ret: %d\n", __PRETTY_FUNCTION__, imStrError((IM_STATUS)ret), ret);
+        return false;
+    }
+
+    return true;
+}
+
+bool br_rga::process_frame_hook(VIDEO_FRAME_INFO_S* ptr_frame, MB_BLK ptr_blk_hook)
+{
+    int ret = 0;
+
+    // Кадр с VI и буфер скрипта импортируем на каждый кадр: так же, как в остальных проходах,
+    // хендлы живут только до конца конвертации
+    int fd_from_vi = RK_MPI_MB_Handle2Fd(ptr_frame->stVFrame.pMbBlk);
+    if (fd_from_vi < 0)
+    {
+        printf("%s: RK_MPI_MB_Handle2Fd fail!\n", __PRETTY_FUNCTION__);
+        return false;
+    }
+
+    int fd_for_hook = RK_MPI_MB_Handle2Fd(ptr_blk_hook);
+    if (fd_for_hook < 0)
+    {
+        printf("%s: RK_MPI_MB_Handle2Fd fail!\n", __PRETTY_FUNCTION__);
+        return false;
+    }
+
+    rga_buffer_handle_t handle_buffer_vi = importbuffer_fd(fd_from_vi, _size_from_vi);
+    rga_buffer_handle_t handle_buffer_hook = importbuffer_fd(fd_for_hook, _size_for_hook);
+    if (handle_buffer_vi == 0 || handle_buffer_hook == 0)
+    {
+        printf("%s: importbuffer_fd fail!\n", __PRETTY_FUNCTION__);
+        if (handle_buffer_vi != 0)
+        {
+            releasebuffer_handle(handle_buffer_vi);
+        }
+        if (handle_buffer_hook != 0)
+        {
+            releasebuffer_handle(handle_buffer_hook);
+        }
+        return false;
+    }
+
+    rga_buffer_t buffer_from_vi = wrapbuffer_handle(
+        handle_buffer_vi,
+        _settings._width,
+        _settings._height,
+        _settings._pixel_format_in_rga
+    );
+    rga_buffer_t buffer_for_hook = wrapbuffer_handle(
+        handle_buffer_hook,
+        _settings._width,
+        _settings._height,
+        _settings._pixel_format_hook_rga
+    );
+
+    // Кадр для скрипта: то же разрешение и та же конвертация из YUV, что и у кадра в поток,
+    // поэтому один проход RGA без масштабирования
+    ret = imcvtcolor(
+        buffer_from_vi,
+        buffer_for_hook,
+        _settings._pixel_format_in_rga,
+        _settings._pixel_format_hook_rga,
+        1
+    );
+    if (ret != IM_STATUS_SUCCESS)
+    {
+        printf("%s: imcvtcolor fail! Desc: %s\n", __PRETTY_FUNCTION__, imStrError((IM_STATUS)ret));
+        releasebuffer_handle(handle_buffer_vi);
+        releasebuffer_handle(handle_buffer_hook);
+        return false;
+    }
+
+    ret = releasebuffer_handle(handle_buffer_vi);
+    ret = releasebuffer_handle(handle_buffer_hook);
+    if (ret != IM_STATUS_SUCCESS)
+    {
+        printf("%s: releasebuffer_handle fail! Desc: %s, ret: %d\n", __PRETTY_FUNCTION__, imStrError((IM_STATUS)ret), ret);
+        return false;
+    }
+
+    return true;
+}
+
+bool br_rga::process_frame_from_hook(MB_BLK ptr_blk_hook)
+{
+    int ret = 0;
+
+    // Размеченный кадр ложится в буфер VENC копией: буфер скрипта нужен ему же под следующий
+    // кадр, поэтому отдать блок скрипта в VENC напрямую нельзя
+    int fd_for_hook = RK_MPI_MB_Handle2Fd(ptr_blk_hook);
+    if (fd_for_hook < 0)
+    {
+        printf("%s: RK_MPI_MB_Handle2Fd fail!\n", __PRETTY_FUNCTION__);
+        return false;
+    }
+
+    rga_buffer_handle_t handle_buffer_hook = importbuffer_fd(fd_for_hook, _size_for_hook);
+    if (handle_buffer_hook == 0)
+    {
+        printf("%s: importbuffer_fd fail!\n", __PRETTY_FUNCTION__);
+        return false;
+    }
+
+    rga_buffer_t buffer_for_hook = wrapbuffer_handle(
+        handle_buffer_hook,
+        _settings._width,
+        _settings._height,
+        _settings._pixel_format_hook_rga
+    );
+
+    // Форматы совпадают, поэтому это копия, а не конвертация: цветовые проходы RGA тут не нужны
+    ret = imcopy(buffer_for_hook, _buffer_for_venc);
+    if (ret != IM_STATUS_SUCCESS)
+    {
+        printf("%s: imcopy fail! Desc: %s\n", __PRETTY_FUNCTION__, imStrError((IM_STATUS)ret));
+        releasebuffer_handle(handle_buffer_hook);
+        return false;
+    }
+
+    ret = releasebuffer_handle(handle_buffer_hook);
     if (ret != IM_STATUS_SUCCESS)
     {
         printf("%s: releasebuffer_handle fail! Desc: %s, ret: %d\n", __PRETTY_FUNCTION__, imStrError((IM_STATUS)ret), ret);

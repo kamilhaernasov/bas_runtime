@@ -34,6 +34,8 @@ public:
         PIXEL_FORMAT_E _pixel_format_in;
         _Rga_SURF_FORMAT _pixel_format_in_rga;
         _Rga_SURF_FORMAT _pixel_format_out_rga;
+        // Формат кадра-копии для внешнего скрипта: RGB888 - тот же, что уходит в VENC
+        _Rga_SURF_FORMAT _pixel_format_hook_rga;
         float _pixels_per_byte_out;
         float _pixels_per_byte_in;
     };
@@ -48,6 +50,10 @@ public:
     bool process_frame(VIDEO_FRAME_INFO_S* ptr_frame);
     // Кадр для входа модели: вписывается с сохранением пропорций, поля заливаются
     bool process_frame_model(VIDEO_FRAME_INFO_S* ptr_frame);
+    // Кадр для внешнего скрипта: то же разрешение и тот же формат, что и у кадра в поток
+    bool process_frame_hook(VIDEO_FRAME_INFO_S* ptr_frame, MB_BLK ptr_blk_hook);
+    // Возврат кадра из скрипта в поток: копия в буфер VENC, форматы совпадают
+    bool process_frame_from_hook(MB_BLK ptr_blk_hook);
 
     bool release();
 
@@ -61,6 +67,8 @@ private:
     uint32_t _size_for_venc;
     uint32_t _size_for_model;
     uint32_t _size_from_vi;
+    // Кадр под внешний скрипт: то же разрешение и те же три байта на пиксель
+    uint32_t _size_for_hook;
 
     // Прямоугольник входа модели, в который попадает кадр, и поля вокруг него
     float _scale = 0;

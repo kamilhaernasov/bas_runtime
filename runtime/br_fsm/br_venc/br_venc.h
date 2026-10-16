@@ -53,6 +53,10 @@ private:
 
     uint16_t _channel;
 
+    // Поток VENC получен и ждет освобождения: ReleaseStream по неполученному потоку разбирает
+    // мусор в _codec_frame (pstPack, u32PackCount) и роняет процесс
+    bool _is_stream_held = false;
+
     VENC_STREAM_S _codec_frame;	
     VIDEO_FRAME_INFO_S _frame;
 };

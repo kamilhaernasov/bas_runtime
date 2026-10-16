@@ -25,6 +25,7 @@ extern "C"
 #include "br_rtsp.h"
 #include "br_npu.h"
 #include "br_model.h"
+#include "br_hook.h"
 
 class br_fsm 
 {
@@ -55,6 +56,19 @@ public:
         float _nms_thresh = 0.45f;
         // Максимальное количество рамок детекции на кадр
         int _max_detections = 128;
+        // Ручек из hook.ini
+        // Внешний скрипт: выключен — в поток идут кадры без разметки, процесса скрипта нет
+        bool _hook_enabled = false;
+        // Режим хука: false — конвеер ждет скрипт, true — не ждет
+        bool _hook_async = true;
+        std::string _path_to_hook = "./hook_user.py";
+        std::string _path_python = "python3";
+        uint32_t _hook_timeout_ms = 50;
+        // Сколько терпим молчание скрипта до перезапуска: в асинхронном режиме он вправе
+        // работать медленно, поэтому это отдельная ручка, а не бюджет кадра
+        uint32_t _hook_stuck_ms = 2000;
+        // Сколько ждем, пока скрипт поднимется: импорт cv2 и numpy на плате небыстрый
+        uint32_t _hook_start_ms = 5000;
         // Параметры связки VI/RGA/VENC: это не ручки, а константы пайплайна
         uint8_t _mb_blk_count = 1;
         float _bytes_per_pixel_out = 3;
@@ -62,6 +76,10 @@ public:
         PIXEL_FORMAT_E _pixel_format_in = RK_FMT_YUV420SP;
         _Rga_SURF_FORMAT _pixel_format_in_rga = RK_FORMAT_YCbCr_420_SP;
         _Rga_SURF_FORMAT _pixel_format_out_rga = RK_FORMAT_RGB_888;
+        // Кадр для внешнего скрипта: тот же RGB888, что уходит в VENC. Тогда возврат кадра скрипта
+        // в поток - это копия без конвертации, а скрипт получает кадр тем же проходом RGA, что
+        // и поток (YUV -> RGB), без лишней смены раскладки каналов
+        _Rga_SURF_FORMAT _pixel_format_hook_rga = RK_FORMAT_RGB_888;
         PIXEL_FORMAT_E _pixel_format_out = RK_FMT_RGB888;
     };
 
@@ -81,7 +99,7 @@ private:
         uint64_t vi = 0;
         uint64_t rga = 0;
         uint64_t npu = 0;
-        uint64_t draw = 0;
+        uint64_t hook = 0;
         uint64_t flush = 0;
         uint64_t venc = 0;
         uint64_t rtsp = 0;
@@ -91,7 +109,6 @@ private:
 
     bool inited = false;
 
-    bool draw_detections(void* ptr_frame);
     void print_fps();
     // Отладка кадров: времена стадий текущего кадра и число детекций.
     // Печатает только под определением debug_frame (см. DEBUG_FRAME в CMakeLists)
@@ -107,6 +124,8 @@ private:
 
     br_mb_pool _mb_pool;
     br_mb_pool _mb_pool_npu;
+    // Пул под кадр внешнего скрипта: формат потока (RGB888), разрешение потока
+    br_mb_pool _mb_pool_hook;
     br_vi _vi;
     br_rga _brga;
     br_venc _venc;
@@ -114,4 +133,6 @@ private:
     // Разбор выходов модели: создается по типу из конфига, br_npu только вызывает его методы
     std::unique_ptr<br_model> _model;
     br_npu _npu;
+    // Внешний скрипт пользователя: рисует поверх кадра, который уходит в поток
+    br_hook _hook;
 };

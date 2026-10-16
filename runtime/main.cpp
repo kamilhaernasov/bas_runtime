@@ -8,9 +8,10 @@
 #define BAS_RUNTIME_VERSION "unknown"
 #endif
 
-// Имена конфигов: рантайм и модель
+// Имена конфигов: рантайм, модель и внешний скрипт
 static constexpr const char* CONFIG_NAME = "config.ini";
 static constexpr const char* MODEL_CONFIG_NAME = "model.ini";
+static constexpr const char* HOOK_CONFIG_NAME = "hook.ini";
 
 bool set_fsm_settings(br_fsm& f);
 
@@ -21,7 +22,8 @@ int main(int argc, char *argv[])
     br_fsm bas_fsm;
     if (!set_fsm_settings(bas_fsm))
     {
-        printf("%s: %s and %s must be next to the binary\n", __PRETTY_FUNCTION__, CONFIG_NAME, MODEL_CONFIG_NAME);
+        printf("%s: %s, %s and %s must be next to the binary\n",
+               __PRETTY_FUNCTION__, CONFIG_NAME, MODEL_CONFIG_NAME, HOOK_CONFIG_NAME);
         return 1;
     }
 
@@ -49,6 +51,14 @@ bool set_fsm_settings(br_fsm& f)
     if (model_config.ParseError() != 0)
     {
         printf("%s: %s: can't parse config... Error:%s\n", __PRETTY_FUNCTION__, MODEL_CONFIG_NAME, model_config.ParseErrorMessage().c_str());
+        return false;
+    }
+
+    // Внешний скрипт: свой конфиг, чтобы скрипт можно было менять и обновлять отдельно от всего
+    INIReader hook_config(HOOK_CONFIG_NAME);
+    if (hook_config.ParseError() != 0)
+    {
+        printf("%s: %s: can't parse config... Error:%s\n", __PRETTY_FUNCTION__, HOOK_CONFIG_NAME, hook_config.ParseErrorMessage().c_str());
         return false;
     }
 
@@ -80,6 +90,15 @@ bool set_fsm_settings(br_fsm& f)
     settings._nms_thresh = static_cast<float>(model_config.GetReal("detection", "nms_thresh", settings._nms_thresh));
     settings._max_detections = static_cast<int>(model_config.GetUnsigned("detection", "max_detections", settings._max_detections));
 
+    // Внешний скрипт: включение, режим работы и бюджет ожидания
+    settings._hook_enabled = hook_config.GetBoolean("hook", "enabled", settings._hook_enabled);
+    settings._hook_async = hook_config.GetString("hook", "mode", settings._hook_async ? "async" : "sync") == "async";
+    settings._path_to_hook = hook_config.GetString("hook", "script", settings._path_to_hook);
+    settings._path_python = hook_config.GetString("hook", "python", settings._path_python);
+    settings._hook_timeout_ms = static_cast<uint32_t>(hook_config.GetUnsigned("hook", "timeout_ms", settings._hook_timeout_ms));
+    settings._hook_stuck_ms = static_cast<uint32_t>(hook_config.GetUnsigned("hook", "stuck_ms", settings._hook_stuck_ms));
+    settings._hook_start_ms = static_cast<uint32_t>(hook_config.GetUnsigned("hook", "start_ms", settings._hook_start_ms));
+
     f.set_settings(settings);
 
     printf("%s: %s: apply: | frame %ux%u | rtsp %u%s\n",
@@ -91,6 +110,13 @@ bool set_fsm_settings(br_fsm& f)
            settings._model_type.c_str(), settings._path_to_model.c_str(),
            static_cast<unsigned>(settings._width_model), static_cast<unsigned>(settings._height_model),
            settings._box_thresh, settings._nms_thresh, settings._max_detections);
+    printf("%s: %s: apply: | %s | script %s | python %s | timeout %u ms | молчание %u ms | запуск %u ms\n",
+           __PRETTY_FUNCTION__, HOOK_CONFIG_NAME,
+           settings._hook_enabled ? (settings._hook_async ? "async" : "sync") : "выключен",
+           settings._path_to_hook.c_str(), settings._path_python.c_str(),
+           static_cast<unsigned>(settings._hook_timeout_ms),
+           static_cast<unsigned>(settings._hook_stuck_ms),
+           static_cast<unsigned>(settings._hook_start_ms));
 
     return true;
 }
